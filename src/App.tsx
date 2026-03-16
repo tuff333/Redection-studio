@@ -475,6 +475,7 @@ function EditorView({ file, settings, onBack, addAlert, setFiles }: {
   const [isProcessing, setIsProcessing] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearching, setIsSearching] = useState(false);
+  const [searchProgress, setSearchProgress] = useState(0);
   const [useRegex, setUseRegex] = useState(false);
   const [isCaseSensitive, setIsCaseSensitive] = useState(false);
   const [isFuzzyMatch, setIsFuzzyMatch] = useState(false);
@@ -510,6 +511,7 @@ function EditorView({ file, settings, onBack, addAlert, setFiles }: {
   const handleSearchAndRedact = async () => {
     if (!pdf || !searchQuery) return;
     setIsSearching(true);
+    setSearchProgress(0);
     addAlert('info', `Searching for "${searchQuery}"...`);
     
     try {
@@ -533,7 +535,6 @@ function EditorView({ file, settings, onBack, addAlert, setFiles }: {
         const target = isCaseSensitive ? searchQuery : searchQuery.toLowerCase();
         
         if (isFuzzyMatch) {
-          // Simple fuzzy: check if all characters of target exist in source in order
           let i = 0;
           for (const char of source) {
             if (char === target[i]) i++;
@@ -546,6 +547,7 @@ function EditorView({ file, settings, onBack, addAlert, setFiles }: {
       };
 
       for (let i = 1; i <= numPages; i++) {
+        setSearchProgress(Math.round((i / numPages) * 100));
         const page = await pdf.getPage(i);
         const textContent = await page.getTextContent();
         const viewport = page.getViewport({ scale: 1.0 });
@@ -595,7 +597,6 @@ function EditorView({ file, settings, onBack, addAlert, setFiles }: {
       }
       
       if (newRedactions.length > 0) {
-        // Show temporary highlights
         setTempHighlights(newRedactions.map(r => ({ 
           x: r.x, 
           y: r.y, 
@@ -612,13 +613,14 @@ function EditorView({ file, settings, onBack, addAlert, setFiles }: {
           addAlert('success', `Found and redacted ${newRedactions.length} occurrences.`);
         }, 1000);
       } else {
-        addAlert('info', 'No matches found.');
+        addAlert('warning', `No matches found for "${searchQuery}". Try adjusting your search settings.`);
       }
     } catch (error) {
       console.error(error);
       addAlert('error', 'Failed to search document.');
     } finally {
       setIsSearching(false);
+      setSearchProgress(0);
     }
   };
 
@@ -655,6 +657,36 @@ function EditorView({ file, settings, onBack, addAlert, setFiles }: {
     }
   };
 
+  useEffect(() => {
+    setFiles(prev => prev.map(f => 
+      f.id === file.id ? { ...f, redactions } : f
+    ));
+    
+    // Save session state to localStorage
+    const sessionKey = `redactio-session-${file.id}`;
+    localStorage.setItem(sessionKey, JSON.stringify({
+      redactions,
+      historyIndex,
+      history
+    }));
+  }, [redactions, historyIndex, history, file.id, setFiles]);
+
+  useEffect(() => {
+    // Load session state if exists
+    const sessionKey = `redactio-session-${file.id}`;
+    const saved = localStorage.getItem(sessionKey);
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (parsed.redactions) setRedactions(parsed.redactions);
+        if (parsed.history) setHistory(parsed.history);
+        if (parsed.historyIndex !== undefined) setHistoryIndex(parsed.historyIndex);
+      } catch (e) {
+        console.error('Failed to load session:', e);
+      }
+    }
+  }, [file.id]);
+
   const handleZoomIn = () => setScale(s => Math.min(3, s + 0.1));
   const handleZoomOut = () => setScale(s => Math.max(0.5, s - 0.1));
 
@@ -683,7 +715,7 @@ function EditorView({ file, settings, onBack, addAlert, setFiles }: {
         contents: {
           parts: [
             { inlineData: { data: imageData, mimeType: "image/png" } },
-            { text: "Analyze this document image and identify sensitive information that should be redacted. Specifically look for and redact: Report numbers, physical addresses, PO numbers (Purchase Orders), lab numbers, sample IDs, barcodes, and QR codes. For each item found, provide its bounding box as percentages of the image width and height (x, y, width, height where x and y are the top-left corner) and a label describing what it is (e.g., 'REPORT NO.', 'ADDRESS', 'PO#', 'LAB NO.', 'SAMPLE ID', 'BARCODE', 'QR CODE'). Return the result as a JSON array of objects like this: [{\"x\": 10.5, \"y\": 20.1, \"width\": 15.0, \"height\": 2.5, \"label\": \"REPORT NO.\"}]. Only return the JSON array, nothing else." }
+            { text: "Analyze this document image and identify sensitive information that should be redacted. Specifically look for and redact: Report numbers, physical addresses, PO numbers (Purchase Orders), lab numbers, sample IDs, barcodes, and QR codes. Also identify PII (Names, Emails, Phone Numbers, SSNs) and any company-specific sensitive data. For each item found, provide its bounding box as percentages of the image width and height (x, y, width, height where x and y are the top-left corner) and a label describing what it is. Return the result as a JSON array of objects like this: [{\"x\": 10.5, \"y\": 20.1, \"width\": 15.0, \"height\": 2.5, \"label\": \"REPORT NO.\"}]. Only return the JSON array, nothing else." }
           ]
         },
         config: {
@@ -1275,15 +1307,25 @@ function EditorView({ file, settings, onBack, addAlert, setFiles }: {
             <div className="flex items-center justify-between">
               <h3 className="font-bold text-lg">Search & Redact</h3>
             </div>
-            <div className="flex gap-2">
-              <input 
-                type="text"
-                placeholder={useRegex ? "Regex search..." : "Search text..."}
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleSearchAndRedact()}
-                className="flex-1 px-3 py-2 bg-neutral-100 dark:bg-neutral-800 rounded-xl text-sm outline-none focus:ring-2 focus:ring-black dark:focus:ring-white"
-              />
+            <div className="flex gap-2 relative">
+              <div className="flex-1 relative">
+                <input 
+                  type="text"
+                  placeholder={useRegex ? "Regex search..." : "Search text..."}
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleSearchAndRedact()}
+                  className="w-full px-3 py-2 bg-neutral-100 dark:bg-neutral-800 rounded-xl text-sm outline-none focus:ring-2 focus:ring-black dark:focus:ring-white pr-8"
+                />
+                {searchQuery && (
+                  <button 
+                    onClick={() => setSearchQuery('')}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 p-1 hover:bg-neutral-200 dark:hover:bg-neutral-700 rounded-full transition-colors"
+                  >
+                    <X className="w-3 h-3 text-neutral-400" />
+                  </button>
+                )}
+              </div>
               <button 
                 onClick={() => setUseRegex(!useRegex)}
                 className={cn(
@@ -1297,9 +1339,17 @@ function EditorView({ file, settings, onBack, addAlert, setFiles }: {
               <button 
                 onClick={handleSearchAndRedact}
                 disabled={isSearching || !searchQuery}
-                className="p-2 bg-black dark:bg-white text-white dark:text-black rounded-xl hover:opacity-90 transition-opacity disabled:opacity-50"
+                className="p-2 bg-black dark:bg-white text-white dark:text-black rounded-xl hover:opacity-90 transition-opacity disabled:opacity-50 relative overflow-hidden"
               >
-                {isSearching ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
+                {isSearching ? (
+                  <>
+                    <RefreshCw className="w-4 h-4 animate-spin" />
+                    <div 
+                      className="absolute bottom-0 left-0 h-1 bg-emerald-500 transition-all duration-300" 
+                      style={{ width: `${searchProgress}%` }}
+                    />
+                  </>
+                ) : <Search className="w-4 h-4" />}
               </button>
             </div>
             <div className="flex gap-2">
@@ -1339,14 +1389,32 @@ function EditorView({ file, settings, onBack, addAlert, setFiles }: {
                 </span>
               )}
             </div>
-            <button 
-              onClick={triggerOCR}
-              disabled={ocrStatus === 'loading'}
-              className="w-full py-2 border border-neutral-200 dark:border-neutral-800 rounded-xl text-xs font-medium hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors flex items-center justify-center gap-2"
-            >
-              {ocrStatus === 'loading' ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Barcode className="w-3.5 h-3.5" />}
-              Run OCR on Page {pageNumber}
-            </button>
+            <div className="flex gap-2">
+              <button 
+                onClick={triggerOCR}
+                disabled={ocrStatus === 'loading'}
+                className="flex-1 py-2 border border-neutral-200 dark:border-neutral-800 rounded-xl text-xs font-medium hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors flex items-center justify-center gap-2"
+              >
+                {ocrStatus === 'loading' ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Barcode className="w-3.5 h-3.5" />}
+                Run OCR on Page {pageNumber}
+              </button>
+              {ocrResults[pageNumber - 1] && (
+                <button 
+                  onClick={() => {
+                    setOcrResults(prev => {
+                      const next = { ...prev };
+                      delete next[pageNumber - 1];
+                      return next;
+                    });
+                    setOcrStatus('idle');
+                  }}
+                  className="p-2 border border-neutral-200 dark:border-neutral-800 rounded-xl hover:bg-red-50 dark:hover:bg-red-950/30 text-neutral-400 hover:text-red-500 transition-colors"
+                  title="Clear OCR Results"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              )}
+            </div>
             {ocrResults[pageNumber - 1] && (
               <button 
                 onClick={() => {
@@ -1575,6 +1643,7 @@ function BatchView({ files, setFiles, settings, setSettings, addAlert }: {
   const [batchRules, setBatchRules] = useState({
     pii: true,
     barcodes: false,
+    companyDetection: false,
     sensitiveTerms: '',
   });
   const [ruleName, setRuleName] = useState('');
@@ -1583,14 +1652,73 @@ function BatchView({ files, setFiles, settings, setSettings, addAlert }: {
     setIsProcessing(true);
     addAlert('info', `Processing ${files.length} files with selected rules...`);
     
-    // Simulate batch processing
-    for (let i = 0; i < files.length; i++) {
-      await new Promise(r => setTimeout(r, 1000));
-      // In real app, apply logic here based on batchRules
-    }
+    const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
-    setIsProcessing(false);
-    addAlert('success', 'Batch processing complete!');
+    try {
+      const updatedFiles = [...files];
+      
+      for (let i = 0; i < updatedFiles.length; i++) {
+        const file = updatedFiles[i];
+        file.status = 'processing';
+        setFiles([...updatedFiles]);
+
+        const pdfBytes = await fetch(file.url).then(res => res.arrayBuffer());
+        const pdfDoc = await pdfjs.getDocument({ data: pdfBytes }).promise;
+        const numPages = pdfDoc.numPages;
+        const allRedactions: RedactionBox[] = [];
+
+        for (let pageNum = 1; pageNum <= numPages; pageNum++) {
+          const page = await pdfDoc.getPage(pageNum);
+          const viewport = page.getViewport({ scale: 2.0 });
+          const canvas = document.createElement('canvas');
+          const context = canvas.getContext('2d');
+          canvas.height = viewport.height;
+          canvas.width = viewport.width;
+          
+          await page.render({ canvasContext: context!, viewport, canvas }).promise;
+          const imageData = canvas.toDataURL('image/png').split(',')[1];
+
+          let prompt = "Analyze this document page for sensitive information. ";
+          if (batchRules.pii) prompt += "Identify PII (Names, Emails, Phone Numbers, SSNs). ";
+          if (batchRules.barcodes) prompt += "Identify Barcodes and QR codes. ";
+          if (batchRules.companyDetection) prompt += "Identify the company this document belongs to and find company-specific sensitive data like internal IDs or proprietary project names. ";
+          if (batchRules.sensitiveTerms) prompt += `Also look for these specific terms: ${batchRules.sensitiveTerms}. `;
+          
+          prompt += "Return a JSON array of bounding boxes as percentages (x, y, width, height) and a label for each. Format: [{\"x\": 10, \"y\": 20, \"width\": 5, \"height\": 2, \"label\": \"NAME\"}]. Only return the JSON array.";
+
+          const response = await ai.models.generateContent({
+            model: "gemini-3-flash-preview",
+            contents: [{ parts: [{ inlineData: { data: imageData, mimeType: "image/png" } }, { text: prompt }] }],
+            config: { responseMimeType: "application/json" }
+          });
+
+          const results = JSON.parse(response.text || "[]");
+          results.forEach((res: any) => {
+            allRedactions.push({
+              id: Math.random().toString(36).substring(7),
+              pageIndex: pageNum - 1,
+              x: res.x,
+              y: res.y,
+              width: res.width,
+              height: res.height,
+              label: res.label,
+              type: 'auto',
+              isSelected: true
+            });
+          });
+        }
+
+        updatedFiles[i] = { ...file, redactions: allRedactions, status: 'ready' };
+        setFiles([...updatedFiles]);
+      }
+
+      addAlert('success', 'Batch processing complete!');
+    } catch (error) {
+      console.error(error);
+      addAlert('error', 'Batch processing failed.');
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
   const saveRuleSet = () => {
@@ -1615,6 +1743,7 @@ function BatchView({ files, setFiles, settings, setSettings, addAlert }: {
     setBatchRules({
       pii: rule.pii,
       barcodes: rule.barcodes,
+      companyDetection: rule.companyDetection || false,
       sensitiveTerms: rule.sensitiveTerms
     });
     addAlert('info', `Loaded rule set "${rule.name}".`);
@@ -1668,6 +1797,15 @@ function BatchView({ files, setFiles, settings, setSettings, addAlert }: {
                   type="checkbox" 
                   checked={batchRules.barcodes}
                   onChange={(e) => setBatchRules(prev => ({ ...prev, barcodes: e.target.checked }))}
+                  className="w-4 h-4 accent-black dark:accent-white"
+                />
+              </label>
+              <label className="flex items-center justify-between cursor-pointer group">
+                <span className="text-sm text-neutral-600 dark:text-neutral-400 group-hover:text-black dark:group-hover:text-white transition-colors">Company Detection</span>
+                <input 
+                  type="checkbox" 
+                  checked={batchRules.companyDetection}
+                  onChange={(e) => setBatchRules(prev => ({ ...prev, companyDetection: e.target.checked }))}
                   className="w-4 h-4 accent-black dark:accent-white"
                 />
               </label>
@@ -1774,14 +1912,36 @@ function SettingsView({ settings, setSettings, onBack, activeFile, setFiles }: {
   setFiles: React.Dispatch<React.SetStateAction<PDFFile[]>>;
 }) {
   const [exportOnlySelected, setExportOnlySelected] = useState(false);
+  const [lastSaved, setLastSaved] = useState<number | null>(null);
+
+  useEffect(() => {
+    setLastSaved(Date.now());
+    const timer = setTimeout(() => setLastSaved(null), 2000);
+    return () => clearTimeout(timer);
+  }, [settings]);
 
   return (
-    <div className="max-w-2xl mx-auto">
-      <div className="flex items-center gap-4 mb-8">
-        <button onClick={onBack} className="p-2 hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded-lg">
-          <ChevronLeft className="w-6 h-6" />
-        </button>
-        <h2 className="text-3xl font-bold tracking-tight">Settings</h2>
+    <div className="max-w-2xl mx-auto relative">
+      <div className="flex items-center justify-between mb-8">
+        <div className="flex items-center gap-4">
+          <button onClick={onBack} className="p-2 hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded-lg">
+            <ChevronLeft className="w-6 h-6" />
+          </button>
+          <h2 className="text-3xl font-bold tracking-tight">Settings</h2>
+        </div>
+        <AnimatePresence>
+          {lastSaved && (
+            <motion.div 
+              initial={{ opacity: 0, x: 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: 10 }}
+              className="flex items-center gap-2 text-emerald-500 text-sm font-medium"
+            >
+              <CheckCircle2 className="w-4 h-4" />
+              Changes saved automatically
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
 
       <div className="space-y-8">

@@ -58,6 +58,7 @@ export interface BatchRuleSet {
   name: string;
   pii: boolean;
   barcodes: boolean;
+  companyDetection: boolean;
   sensitiveTerms: string;
 }
 
