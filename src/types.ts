@@ -10,6 +10,7 @@ export interface RedactionBox {
   type: 'text' | 'box' | 'auto' | 'highlight';
   path?: string; // For freeform shapes (SVG path data in percentages)
   isSelected: boolean;
+  comment?: string;
 }
 
 export interface OCRResult {
@@ -50,11 +51,23 @@ export interface ToolbarToolConfig {
   label: string;
 }
 
+export type RedactionStyle = 'solid' | 'pattern' | 'outline';
+
+export interface BatchRuleSet {
+  id: string;
+  name: string;
+  pii: boolean;
+  barcodes: boolean;
+  sensitiveTerms: string;
+}
+
 export interface AppSettings {
   theme: Theme;
   redactionColor: string;
+  redactionStyle: RedactionStyle;
   toolbar: ToolbarToolConfig[];
   fileNamePattern: string;
+  savedBatchRules: BatchRuleSet[];
   shortcuts: {
     undo: string;
     redo: string;

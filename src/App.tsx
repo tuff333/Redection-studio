@@ -6,9 +6,10 @@ import {
   Undo, Redo, Search, ChevronLeft, ChevronRight,
   Type as TypeIcon, Square, Highlighter, Sun, Moon,
   Monitor, Palette, Keyboard, X, Plus, Play, RefreshCw,
-  Barcode, QrCode, GripVertical, Eye, EyeOff, ArrowUp, ArrowDown
+  Barcode, QrCode, GripVertical, Eye, EyeOff, ArrowUp, ArrowDown,
+  Save, Bookmark
 } from 'lucide-react';
-import { PDFFile, RedactionBox, AppSettings, Theme, OCRResult } from './types';
+import { PDFFile, RedactionBox, AppSettings, Theme, OCRResult, BatchRuleSet, RedactionStyle } from './types';
 import { cn, formatFileName } from './lib/utils';
 import { PDFDocument, rgb } from 'pdf-lib';
 import { Document, Page, pdfjs } from 'react-pdf';
@@ -24,6 +25,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.vers
 const DEFAULT_SETTINGS: AppSettings = {
   theme: 'system',
   redactionColor: '#000000',
+  redactionStyle: 'solid',
   toolbar: [
     { id: 'selection', visible: true, label: 'Selection Tools' },
     { id: 'history', visible: true, label: 'Undo/Redo' },
@@ -32,6 +34,7 @@ const DEFAULT_SETTINGS: AppSettings = {
     { id: 'action', visible: true, label: 'Apply & Save' },
   ],
   fileNamePattern: '{name}_redacted',
+  savedBatchRules: [],
   shortcuts: {
     undo: 'Ctrl+Z',
     redo: 'Ctrl+Y',
@@ -217,6 +220,7 @@ export default function App() {
                 files={files} 
                 setFiles={setFiles} 
                 settings={settings} 
+                setSettings={setSettings}
                 addAlert={addAlert} 
               />
             </motion.div>
@@ -295,6 +299,7 @@ function EditorView({ file, settings, onBack, addAlert, setFiles }: {
   const [drawStart, setDrawStart] = useState<{ x: number; y: number } | null>(null);
   const [currentBox, setCurrentBox] = useState<{ x: number; y: number; width: number; height: number } | null>(null);
   const [currentPath, setCurrentPath] = useState<{ x: number; y: number }[]>([]);
+  const [tempHighlights, setTempHighlights] = useState<{ x: number; y: number; width: number; height: number; pageIndex: number }[]>([]);
 
   const addToHistory = (newRedactions: RedactionBox[]) => {
     const nextHistory = [...history.slice(0, historyIndex + 1), newRedactions].slice(-50);
@@ -471,6 +476,9 @@ function EditorView({ file, settings, onBack, addAlert, setFiles }: {
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearching, setIsSearching] = useState(false);
   const [useRegex, setUseRegex] = useState(false);
+  const [isCaseSensitive, setIsCaseSensitive] = useState(false);
+  const [isFuzzyMatch, setIsFuzzyMatch] = useState(false);
+  const [ocrStatus, setOcrStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [password, setPassword] = useState<string>('');
   const [isPasswordRequired, setIsPasswordRequired] = useState(false);
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
@@ -507,9 +515,10 @@ function EditorView({ file, settings, onBack, addAlert, setFiles }: {
     try {
       const newRedactions: RedactionBox[] = [];
       let regex: RegExp | null = null;
+      
       if (useRegex) {
         try {
-          regex = new RegExp(searchQuery, 'gi');
+          regex = new RegExp(searchQuery, isCaseSensitive ? 'g' : 'gi');
         } catch (e) {
           addAlert('error', 'Invalid regular expression.');
           setIsSearching(false);
@@ -517,17 +526,32 @@ function EditorView({ file, settings, onBack, addAlert, setFiles }: {
         }
       }
 
+      const checkMatch = (text: string) => {
+        if (useRegex && regex) return regex.test(text);
+        
+        const source = isCaseSensitive ? text : text.toLowerCase();
+        const target = isCaseSensitive ? searchQuery : searchQuery.toLowerCase();
+        
+        if (isFuzzyMatch) {
+          // Simple fuzzy: check if all characters of target exist in source in order
+          let i = 0;
+          for (const char of source) {
+            if (char === target[i]) i++;
+            if (i === target.length) return true;
+          }
+          return false;
+        }
+        
+        return source.includes(target);
+      };
+
       for (let i = 1; i <= numPages; i++) {
         const page = await pdf.getPage(i);
         const textContent = await page.getTextContent();
         const viewport = page.getViewport({ scale: 1.0 });
         
         textContent.items.forEach((item: any) => {
-          const matches = useRegex 
-            ? item.str.match(regex!) 
-            : item.str.toLowerCase().includes(searchQuery.toLowerCase());
-
-          if (matches) {
+          if (checkMatch(item.str)) {
             const [scaleX, , , scaleY, tx, ty] = item.transform;
             
             const x = (tx / viewport.width) * 100;
@@ -553,11 +577,7 @@ function EditorView({ file, settings, onBack, addAlert, setFiles }: {
         // Search in OCR results
         const pageOCR = ocrResults[i - 1] || [];
         pageOCR.forEach(item => {
-          const matches = useRegex 
-            ? item.text.match(regex!) 
-            : item.text.toLowerCase().includes(searchQuery.toLowerCase());
-
-          if (matches) {
+          if (checkMatch(item.text)) {
             newRedactions.push({
               id: Math.random().toString(36).substring(7),
               pageIndex: i - 1,
@@ -575,10 +595,22 @@ function EditorView({ file, settings, onBack, addAlert, setFiles }: {
       }
       
       if (newRedactions.length > 0) {
-        const updatedRedactions = [...redactions, ...newRedactions];
-        setRedactions(updatedRedactions);
-        addToHistory(updatedRedactions);
-        addAlert('success', `Found and redacted ${newRedactions.length} occurrences.`);
+        // Show temporary highlights
+        setTempHighlights(newRedactions.map(r => ({ 
+          x: r.x, 
+          y: r.y, 
+          width: r.width, 
+          height: r.height, 
+          pageIndex: r.pageIndex 
+        })));
+        
+        setTimeout(() => {
+          setTempHighlights([]);
+          const updatedRedactions = [...redactions, ...newRedactions];
+          setRedactions(updatedRedactions);
+          addToHistory(updatedRedactions);
+          addAlert('success', `Found and redacted ${newRedactions.length} occurrences.`);
+        }, 1000);
       } else {
         addAlert('info', 'No matches found.');
       }
@@ -587,6 +619,30 @@ function EditorView({ file, settings, onBack, addAlert, setFiles }: {
       addAlert('error', 'Failed to search document.');
     } finally {
       setIsSearching(false);
+    }
+  };
+
+  const triggerOCR = async () => {
+    if (!pdf) return;
+    setOcrStatus('loading');
+    addAlert('info', `Running OCR on Page ${pageNumber}...`);
+    
+    try {
+      // Simulate OCR process
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      // Mock results for demonstration
+      const mockResults: OCRResult[] = [
+        { text: "CONFIDENTIAL", x: 10, y: 10, width: 20, height: 5 },
+        { text: "SSN: 000-00-0000", x: 10, y: 20, width: 30, height: 5 },
+      ];
+      
+      setOcrResults(prev => ({ ...prev, [pageNumber - 1]: mockResults }));
+      setOcrStatus('success');
+      addAlert('success', `OCR complete for Page ${pageNumber}. Found ${mockResults.length} items.`);
+    } catch (error) {
+      setOcrStatus('error');
+      addAlert('error', 'OCR failed.');
     }
   };
 
@@ -1145,13 +1201,17 @@ function EditorView({ file, settings, onBack, addAlert, setFiles }: {
                   key={r.id}
                   className={cn(
                     "absolute border-2 transition-all cursor-pointer pointer-events-auto",
-                    r.isSelected ? "border-red-500 bg-red-500/20" : "border-neutral-400 bg-neutral-400/10 opacity-50"
+                    r.isSelected ? "border-red-500 z-10" : "border-neutral-400 opacity-50"
                   )}
                   style={{
                     left: `${r.x}%`,
                     top: `${r.y}%`,
                     width: `${r.width}%`,
                     height: `${r.height}%`,
+                    backgroundColor: settings.redactionStyle === 'outline' ? 'transparent' : (r.isSelected ? 'rgba(239, 68, 68, 0.2)' : settings.redactionColor),
+                    borderColor: r.isSelected ? '#ef4444' : settings.redactionColor,
+                    borderWidth: settings.redactionStyle === 'outline' ? '3px' : '1px',
+                    backgroundImage: settings.redactionStyle === 'pattern' && !r.isSelected ? `repeating-linear-gradient(45deg, transparent, transparent 5px, rgba(255,255,255,0.1) 5px, rgba(255,255,255,0.1) 10px)` : 'none'
                   }}
                   onClick={(e) => {
                     e.stopPropagation();
@@ -1174,6 +1234,23 @@ function EditorView({ file, settings, onBack, addAlert, setFiles }: {
                     </span>
                   )}
                 </div>
+              ))}
+
+              {/* Temporary Highlights for Search Feedback */}
+              {tempHighlights.filter(h => h.pageIndex === pageNumber - 1).map((h, i) => (
+                <motion.div 
+                  key={`temp-${i}`}
+                  initial={{ opacity: 0, scale: 0.8 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0 }}
+                  className="absolute bg-amber-400/40 border-2 border-amber-500 z-50 pointer-events-none"
+                  style={{
+                    left: `${h.x}%`,
+                    top: `${h.y}%`,
+                    width: `${h.width}%`,
+                    height: `${h.height}%`,
+                  }}
+                />
               ))}
 
               {/* Current Drawing Box */}
@@ -1225,6 +1302,77 @@ function EditorView({ file, settings, onBack, addAlert, setFiles }: {
                 {isSearching ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
               </button>
             </div>
+            <div className="flex gap-2">
+              <button 
+                onClick={() => setIsCaseSensitive(!isCaseSensitive)}
+                className={cn(
+                  "flex-1 py-1 rounded-lg text-[10px] font-bold transition-colors border",
+                  isCaseSensitive ? "bg-neutral-100 dark:bg-neutral-800 border-black dark:border-white" : "bg-transparent border-neutral-200 dark:border-neutral-800 text-neutral-400"
+                )}
+              >
+                Case Sensitive
+              </button>
+              <button 
+                onClick={() => setIsFuzzyMatch(!isFuzzyMatch)}
+                className={cn(
+                  "flex-1 py-1 rounded-lg text-[10px] font-bold transition-colors border",
+                  isFuzzyMatch ? "bg-neutral-100 dark:bg-neutral-800 border-black dark:border-white" : "bg-transparent border-neutral-200 dark:border-neutral-800 text-neutral-400"
+                )}
+              >
+                Fuzzy Match
+              </button>
+            </div>
+          </div>
+
+          <div className="h-px bg-neutral-100 dark:bg-neutral-800" />
+
+          <div className="flex flex-col gap-4">
+            <div className="flex items-center justify-between">
+              <h3 className="font-bold text-lg">Page OCR</h3>
+              {ocrStatus !== 'idle' && (
+                <span className={cn(
+                  "text-[10px] font-bold uppercase px-2 py-0.5 rounded",
+                  ocrStatus === 'loading' ? "bg-amber-100 text-amber-600" : 
+                  ocrStatus === 'success' ? "bg-emerald-100 text-emerald-600" : "bg-red-100 text-red-600"
+                )}>
+                  {ocrStatus}
+                </span>
+              )}
+            </div>
+            <button 
+              onClick={triggerOCR}
+              disabled={ocrStatus === 'loading'}
+              className="w-full py-2 border border-neutral-200 dark:border-neutral-800 rounded-xl text-xs font-medium hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors flex items-center justify-center gap-2"
+            >
+              {ocrStatus === 'loading' ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Barcode className="w-3.5 h-3.5" />}
+              Run OCR on Page {pageNumber}
+            </button>
+            {ocrResults[pageNumber - 1] && (
+              <button 
+                onClick={() => {
+                  const results = ocrResults[pageNumber - 1];
+                  const newReds = results.map(res => ({
+                    id: Math.random().toString(36).substring(7),
+                    pageIndex: pageNumber - 1,
+                    x: res.x,
+                    y: res.y,
+                    width: res.width,
+                    height: res.height,
+                    text: res.text,
+                    label: 'OCR Detected',
+                    type: 'text' as const,
+                    isSelected: true,
+                  }));
+                  const updated = [...redactions, ...newReds];
+                  setRedactions(updated);
+                  addToHistory(updated);
+                  addAlert('success', `Redacted ${newReds.length} items from OCR.`);
+                }}
+                className="w-full py-2 bg-black dark:bg-white text-white dark:text-black rounded-xl text-xs font-bold hover:opacity-90 transition-opacity"
+              >
+                Redact All OCR Text
+              </button>
+            )}
           </div>
 
           <div className="h-px bg-neutral-100 dark:bg-neutral-800" />
@@ -1236,140 +1384,139 @@ function EditorView({ file, settings, onBack, addAlert, setFiles }: {
             </span>
           </div>
 
-          <div className="flex-1 overflow-auto flex flex-col gap-3 pr-2">
+          <div className="flex-1 overflow-auto flex flex-col gap-6 pr-2">
             {redactions.length === 0 ? (
               <div className="flex flex-col items-center justify-center h-full text-neutral-400 text-center">
                 <FileText className="w-12 h-12 mb-4 opacity-20" />
                 <p className="text-sm">No redactions detected yet. Use Search or draw manually.</p>
               </div>
             ) : (
-              redactions.map(r => (
-                <div 
-                  key={r.id}
-                  draggable
-                  onDragStart={(e) => {
-                    e.dataTransfer.setData('redactionId', r.id);
-                    e.dataTransfer.effectAllowed = 'move';
-                  }}
-                  className={cn(
-                    "p-3 rounded-xl border transition-all group cursor-grab active:cursor-grabbing",
-                    r.isSelected ? "border-red-200 bg-red-50 dark:border-red-900/50 dark:bg-red-950/20" : "border-neutral-100 dark:border-neutral-800 hover:bg-neutral-50 dark:hover:bg-neutral-800"
-                  )}
-                >
-                  <div className="flex items-center justify-between mb-2">
-                    <div className="flex items-center gap-2">
-                      <GripVertical className="w-3 h-3 text-neutral-300" />
-                      {r.type === 'highlight' ? <Highlighter className="w-3 h-3 text-neutral-400" /> : <Square className="w-3 h-3 text-neutral-400" />}
-                      <input 
-                        type="text"
-                        value={r.label || ''}
-                        placeholder="Label"
-                        onChange={(e) => {
-                          const updated = redactions.map(item => 
-                            item.id === r.id ? { ...item, label: e.target.value } : item
-                          );
-                          setRedactions(updated);
-                          // We use a debounce or only push on blur for label changes in a real app, 
-                          // but for now we'll push to history to keep it simple.
-                          addToHistory(updated);
-                        }}
-                        className="text-[10px] font-bold uppercase tracking-wider bg-transparent outline-none w-24"
-                      />
-                    </div>
-                    <div className="flex items-center gap-1">
-                      <button 
-                        onClick={() => {
-                          const updated = redactions.map(item => 
-                            item.id === r.id ? { ...item, isSelected: !item.isSelected } : item
-                          );
-                          setRedactions(updated);
-                          addToHistory(updated);
-                        }}
-                        className={cn("p-1 rounded hover:bg-neutral-200 dark:hover:bg-neutral-700 transition-colors", r.isSelected ? "text-red-500" : "text-neutral-400")}
-                      >
-                        {r.isSelected ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
-                      </button>
-                      <button 
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          const updated = redactions.filter(item => item.id !== r.id);
-                          setRedactions(updated);
-                          addToHistory(updated);
-                        }}
-                        className="p-1 hover:text-red-500 transition-all text-neutral-400"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
+              Object.entries(
+                redactions.reduce((acc, r) => {
+                  const page = r.pageIndex + 1;
+                  if (!acc[page]) acc[page] = [];
+                  acc[page].push(r);
+                  return acc;
+                }, {} as Record<number, RedactionBox[]>)
+              ).sort(([a], [b]) => Number(a) - Number(b)).map(([page, pageRedactions]) => (
+                <div key={page} className="flex flex-col gap-3">
+                  <div className="flex items-center gap-2 px-1">
+                    <div className="h-px flex-1 bg-neutral-100 dark:bg-neutral-800" />
+                    <span className="text-[10px] font-bold text-neutral-400 uppercase tracking-widest">Page {page}</span>
+                    <div className="h-px flex-1 bg-neutral-100 dark:bg-neutral-800" />
                   </div>
-                  
-                  {r.type !== 'highlight' && (
-                    <div className="grid grid-cols-2 gap-2 mb-2">
-                      <div className="flex flex-col gap-1">
-                        <label className="text-[8px] uppercase text-neutral-400">X (%)</label>
-                        <input 
-                          type="number"
-                          value={Math.round(r.x)}
-                          onChange={(e) => {
-                            const updated = redactions.map(item => 
-                              item.id === r.id ? { ...item, x: parseFloat(e.target.value) } : item
-                            );
-                            setRedactions(updated);
-                            addToHistory(updated);
-                          }}
-                          className="text-[10px] bg-neutral-100 dark:bg-neutral-800 p-1 rounded outline-none"
-                        />
+                  {pageRedactions.map(r => (
+                    <div 
+                      key={r.id}
+                      draggable
+                      onDragStart={(e) => {
+                        e.dataTransfer.setData('redactionId', r.id);
+                        e.dataTransfer.effectAllowed = 'move';
+                      }}
+                      className={cn(
+                        "p-3 rounded-xl border transition-all group cursor-grab active:cursor-grabbing",
+                        r.isSelected ? "border-red-200 bg-red-50 dark:border-red-900/50 dark:bg-red-950/20" : "border-neutral-100 dark:border-neutral-800 hover:bg-neutral-50 dark:hover:bg-neutral-800"
+                      )}
+                    >
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="flex items-center gap-2">
+                          <GripVertical className="w-3 h-3 text-neutral-300" />
+                          {r.type === 'highlight' ? <Highlighter className="w-3 h-3 text-neutral-400" /> : <Square className="w-3 h-3 text-neutral-400" />}
+                          <input 
+                            type="text"
+                            value={r.label || ''}
+                            placeholder="Label"
+                            onChange={(e) => {
+                              const updated = redactions.map(item => 
+                                item.id === r.id ? { ...item, label: e.target.value } : item
+                              );
+                              setRedactions(updated);
+                              addToHistory(updated);
+                            }}
+                            className="text-[10px] font-bold uppercase tracking-wider bg-transparent outline-none w-24"
+                          />
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <button 
+                            onClick={() => {
+                              const updated = redactions.map(item => 
+                                item.id === r.id ? { ...item, isSelected: !item.isSelected } : item
+                              );
+                              setRedactions(updated);
+                              addToHistory(updated);
+                            }}
+                            className={cn("p-1 rounded hover:bg-neutral-200 dark:hover:bg-neutral-700 transition-colors", r.isSelected ? "text-red-500" : "text-neutral-400")}
+                          >
+                            {r.isSelected ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
+                          </button>
+                          <button 
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              const updated = redactions.filter(item => item.id !== r.id);
+                              setRedactions(updated);
+                              addToHistory(updated);
+                            }}
+                            className="p-1 hover:text-red-500 transition-all text-neutral-400"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       </div>
+                      
+                      {r.type !== 'highlight' && (
+                        <div className="grid grid-cols-2 gap-2 mb-2">
+                          <div className="flex flex-col gap-1">
+                            <label className="text-[8px] uppercase text-neutral-400">X (%)</label>
+                            <input 
+                              type="number"
+                              value={Math.round(r.x)}
+                              onChange={(e) => {
+                                const updated = redactions.map(item => 
+                                  item.id === r.id ? { ...item, x: parseFloat(e.target.value) } : item
+                                );
+                                setRedactions(updated);
+                                addToHistory(updated);
+                              }}
+                              className="text-[10px] bg-neutral-100 dark:bg-neutral-800 p-1 rounded outline-none"
+                            />
+                          </div>
+                          <div className="flex flex-col gap-1">
+                            <label className="text-[8px] uppercase text-neutral-400">Y (%)</label>
+                            <input 
+                              type="number"
+                              value={Math.round(r.y)}
+                              onChange={(e) => {
+                                const updated = redactions.map(item => 
+                                  item.id === r.id ? { ...item, y: parseFloat(e.target.value) } : item
+                                );
+                                setRedactions(updated);
+                                addToHistory(updated);
+                              }}
+                              className="text-[10px] bg-neutral-100 dark:bg-neutral-800 p-1 rounded outline-none"
+                            />
+                          </div>
+                        </div>
+                      )}
+
+                      <p className="text-[10px] font-medium truncate text-neutral-500 dark:text-neutral-400 mb-2">{r.text || 'Area selected'}</p>
+                      
                       <div className="flex flex-col gap-1">
-                        <label className="text-[8px] uppercase text-neutral-400">Y (%)</label>
-                        <input 
-                          type="number"
-                          value={Math.round(r.y)}
+                        <label className="text-[8px] uppercase text-neutral-400">Private Comment</label>
+                        <textarea 
+                          value={r.comment || ''}
+                          placeholder="Add reasoning..."
                           onChange={(e) => {
                             const updated = redactions.map(item => 
-                              item.id === r.id ? { ...item, y: parseFloat(e.target.value) } : item
+                              item.id === r.id ? { ...item, comment: e.target.value } : item
                             );
                             setRedactions(updated);
                             addToHistory(updated);
                           }}
-                          className="text-[10px] bg-neutral-100 dark:bg-neutral-800 p-1 rounded outline-none"
-                        />
-                      </div>
-                      <div className="flex flex-col gap-1">
-                        <label className="text-[8px] uppercase text-neutral-400">W (%)</label>
-                        <input 
-                          type="number"
-                          value={Math.round(r.width)}
-                          onChange={(e) => {
-                            const updated = redactions.map(item => 
-                              item.id === r.id ? { ...item, width: parseFloat(e.target.value) } : item
-                            );
-                            setRedactions(updated);
-                            addToHistory(updated);
-                          }}
-                          className="text-[10px] bg-neutral-100 dark:bg-neutral-800 p-1 rounded outline-none"
-                        />
-                      </div>
-                      <div className="flex flex-col gap-1">
-                        <label className="text-[8px] uppercase text-neutral-400">H (%)</label>
-                        <input 
-                          type="number"
-                          value={Math.round(r.height)}
-                          onChange={(e) => {
-                            const updated = redactions.map(item => 
-                              item.id === r.id ? { ...item, height: parseFloat(e.target.value) } : item
-                            );
-                            setRedactions(updated);
-                            addToHistory(updated);
-                          }}
-                          className="text-[10px] bg-neutral-100 dark:bg-neutral-800 p-1 rounded outline-none"
+                          className="text-[10px] bg-neutral-100 dark:bg-neutral-800 p-2 rounded-lg outline-none resize-none h-12 w-full"
                         />
                       </div>
                     </div>
-                  )}
-
-                  <p className="text-[10px] font-medium truncate text-neutral-500 dark:text-neutral-400">{r.text || 'Area selected'}</p>
-                  <p className="text-[8px] text-neutral-400 mt-1">Page {r.pageIndex + 1}</p>
+                  ))}
                 </div>
               ))
             )}
@@ -1417,26 +1564,68 @@ function EditorView({ file, settings, onBack, addAlert, setFiles }: {
   );
 }
 
-function BatchView({ files, setFiles, settings, addAlert }: { 
+function BatchView({ files, setFiles, settings, setSettings, addAlert }: { 
   files: PDFFile[]; 
   setFiles: React.Dispatch<React.SetStateAction<PDFFile[]>>;
   settings: AppSettings;
+  setSettings: React.Dispatch<React.SetStateAction<AppSettings>>;
   addAlert: (type: any, msg: string) => void;
 }) {
   const [isProcessing, setIsProcessing] = useState(false);
+  const [batchRules, setBatchRules] = useState({
+    pii: true,
+    barcodes: false,
+    sensitiveTerms: '',
+  });
+  const [ruleName, setRuleName] = useState('');
 
   const processBatch = async () => {
     setIsProcessing(true);
-    addAlert('info', `Processing ${files.length} files...`);
+    addAlert('info', `Processing ${files.length} files with selected rules...`);
     
     // Simulate batch processing
     for (let i = 0; i < files.length; i++) {
       await new Promise(r => setTimeout(r, 1000));
-      // In real app, apply logic here
+      // In real app, apply logic here based on batchRules
     }
 
     setIsProcessing(false);
     addAlert('success', 'Batch processing complete!');
+  };
+
+  const saveRuleSet = () => {
+    if (!ruleName) {
+      addAlert('error', 'Please enter a name for the rule set.');
+      return;
+    }
+    const newRule: BatchRuleSet = {
+      id: Math.random().toString(36).substring(7),
+      name: ruleName,
+      ...batchRules
+    };
+    setSettings(prev => ({
+      ...prev,
+      savedBatchRules: [...prev.savedBatchRules, newRule]
+    }));
+    setRuleName('');
+    addAlert('success', `Rule set "${newRule.name}" saved.`);
+  };
+
+  const loadRuleSet = (rule: BatchRuleSet) => {
+    setBatchRules({
+      pii: rule.pii,
+      barcodes: rule.barcodes,
+      sensitiveTerms: rule.sensitiveTerms
+    });
+    addAlert('info', `Loaded rule set "${rule.name}".`);
+  };
+
+  const deleteRuleSet = (id: string) => {
+    setSettings(prev => ({
+      ...prev,
+      savedBatchRules: prev.savedBatchRules.filter(r => r.id !== id)
+    }));
+    addAlert('info', 'Rule set deleted.');
   };
 
   return (
@@ -1456,33 +1645,122 @@ function BatchView({ files, setFiles, settings, addAlert }: {
         </button>
       </div>
 
-      <div className="grid gap-4">
-        {files.length === 0 ? (
-          <div className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-3xl p-12 text-center">
-            <Upload className="w-12 h-12 mx-auto mb-4 text-neutral-300" />
-            <p className="text-neutral-500">No files uploaded yet.</p>
-          </div>
-        ) : (
-          files.map(file => (
-            <div key={file.id} className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-2xl p-4 flex items-center justify-between">
-              <div className="flex items-center gap-4">
-                <div className="w-12 h-12 bg-neutral-100 dark:bg-neutral-800 rounded-xl flex items-center justify-center">
-                  <FileText className="w-6 h-6 text-neutral-500" />
-                </div>
-                <div>
-                  <h4 className="font-bold">{file.name}</h4>
-                  <p className="text-xs text-neutral-400">Ready to process</p>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+        <div className="md:col-span-1 space-y-6">
+          <section className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-3xl p-6">
+            <h3 className="font-bold mb-4 flex items-center gap-2 text-sm uppercase tracking-wider text-neutral-400">
+              <Settings className="w-4 h-4" />
+              Detection Rules
+            </h3>
+            <div className="space-y-4">
+              <label className="flex items-center justify-between cursor-pointer group">
+                <span className="text-sm text-neutral-600 dark:text-neutral-400 group-hover:text-black dark:group-hover:text-white transition-colors">PII Detection</span>
+                <input 
+                  type="checkbox" 
+                  checked={batchRules.pii}
+                  onChange={(e) => setBatchRules(prev => ({ ...prev, pii: e.target.checked }))}
+                  className="w-4 h-4 accent-black dark:accent-white"
+                />
+              </label>
+              <label className="flex items-center justify-between cursor-pointer group">
+                <span className="text-sm text-neutral-600 dark:text-neutral-400 group-hover:text-black dark:group-hover:text-white transition-colors">Barcodes & QR</span>
+                <input 
+                  type="checkbox" 
+                  checked={batchRules.barcodes}
+                  onChange={(e) => setBatchRules(prev => ({ ...prev, barcodes: e.target.checked }))}
+                  className="w-4 h-4 accent-black dark:accent-white"
+                />
+              </label>
+              <div className="pt-2">
+                <label className="block text-xs font-bold text-neutral-400 uppercase tracking-wider mb-2">Sensitive Terms (CSV)</label>
+                <textarea 
+                  placeholder="e.g. Confidential, Internal, Draft"
+                  value={batchRules.sensitiveTerms}
+                  onChange={(e) => setBatchRules(prev => ({ ...prev, sensitiveTerms: e.target.value }))}
+                  className="w-full h-24 p-3 bg-neutral-50 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-xl text-sm outline-none focus:ring-2 focus:ring-black dark:focus:ring-white transition-all resize-none"
+                />
+              </div>
+
+              <div className="pt-4 border-t border-neutral-100 dark:border-neutral-800">
+                <label className="block text-xs font-bold text-neutral-400 uppercase tracking-wider mb-2">Save as Preset</label>
+                <div className="flex gap-2">
+                  <input 
+                    type="text"
+                    placeholder="Preset name..."
+                    value={ruleName}
+                    onChange={(e) => setRuleName(e.target.value)}
+                    className="flex-1 px-3 py-2 bg-neutral-50 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-xl text-xs outline-none focus:ring-2 focus:ring-black dark:focus:ring-white"
+                  />
+                  <button 
+                    onClick={saveRuleSet}
+                    className="p-2 bg-neutral-100 dark:bg-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-700 rounded-xl transition-colors"
+                  >
+                    <Save className="w-4 h-4" />
+                  </button>
                 </div>
               </div>
-              <button 
-                onClick={() => setFiles(prev => prev.filter(f => f.id !== file.id))}
-                className="p-2 hover:bg-red-50 dark:hover:bg-red-950/30 text-neutral-400 hover:text-red-500 rounded-lg transition-colors"
-              >
-                <Trash2 className="w-5 h-5" />
-              </button>
             </div>
-          ))
-        )}
+          </section>
+
+          {settings.savedBatchRules.length > 0 && (
+            <section className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-3xl p-6">
+              <h3 className="font-bold mb-4 flex items-center gap-2 text-sm uppercase tracking-wider text-neutral-400">
+                <Bookmark className="w-4 h-4" />
+                Saved Presets
+              </h3>
+              <div className="space-y-2">
+                {settings.savedBatchRules.map(rule => (
+                  <div key={rule.id} className="group flex items-center justify-between p-2 hover:bg-neutral-50 dark:hover:bg-neutral-800 rounded-xl transition-colors cursor-pointer" onClick={() => loadRuleSet(rule)}>
+                    <span className="text-xs font-medium">{rule.name}</span>
+                    <button 
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        deleteRuleSet(rule.id);
+                      }}
+                      className="opacity-0 group-hover:opacity-100 p-1 hover:bg-red-50 dark:hover:bg-red-950/30 text-neutral-400 hover:text-red-500 rounded transition-all"
+                    >
+                      <Trash2 className="w-3 h-3" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+        </div>
+
+        <div className="md:col-span-2 space-y-4">
+          <div className="flex items-center justify-between px-2">
+            <h3 className="font-bold text-neutral-400 uppercase text-[10px] tracking-widest">Processing Queue ({files.length})</h3>
+          </div>
+          <div className="grid gap-4">
+            {files.length === 0 ? (
+              <div className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-3xl p-12 text-center">
+                <Upload className="w-12 h-12 mx-auto mb-4 text-neutral-300" />
+                <p className="text-neutral-500">No files uploaded yet.</p>
+              </div>
+            ) : (
+              files.map(file => (
+                <div key={file.id} className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-2xl p-4 flex items-center justify-between">
+                  <div className="flex items-center gap-4">
+                    <div className="w-12 h-12 bg-neutral-100 dark:bg-neutral-800 rounded-xl flex items-center justify-center">
+                      <FileText className="w-6 h-6 text-neutral-500" />
+                    </div>
+                    <div>
+                      <h4 className="font-bold">{file.name}</h4>
+                      <p className="text-xs text-neutral-400">Ready to process</p>
+                    </div>
+                  </div>
+                  <button 
+                    onClick={() => setFiles(prev => prev.filter(f => f.id !== file.id))}
+                    className="p-2 hover:bg-red-50 dark:hover:bg-red-950/30 text-neutral-400 hover:text-red-500 rounded-lg transition-colors"
+                  >
+                    <Trash2 className="w-5 h-5" />
+                  </button>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -1495,6 +1773,8 @@ function SettingsView({ settings, setSettings, onBack, activeFile, setFiles }: {
   activeFile?: PDFFile;
   setFiles: React.Dispatch<React.SetStateAction<PDFFile[]>>;
 }) {
+  const [exportOnlySelected, setExportOnlySelected] = useState(false);
+
   return (
     <div className="max-w-2xl mx-auto">
       <div className="flex items-center gap-4 mb-8">
@@ -1538,6 +1818,91 @@ function SettingsView({ settings, setSettings, onBack, activeFile, setFiles }: {
                   />
                 </div>
               ))}
+            </div>
+          </section>
+        )}
+
+        {/* Export Redaction Report */}
+        {activeFile && (
+          <section className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-3xl p-8">
+            <div className="flex items-center gap-3 mb-6">
+              <Download className="w-5 h-5 text-neutral-400" />
+              <h3 className="font-bold text-xl">Export Redaction Report</h3>
+            </div>
+            
+            <p className="text-sm text-neutral-500 mb-6">Download a detailed report of redactions in this document, including coordinates, labels, and private comments.</p>
+            
+            <div className="mb-6">
+              <label className="flex items-center gap-3 cursor-pointer group">
+                <input 
+                  type="checkbox" 
+                  checked={exportOnlySelected}
+                  onChange={(e) => setExportOnlySelected(e.target.checked)}
+                  className="w-4 h-4 accent-black dark:accent-white"
+                />
+                <span className="text-sm text-neutral-600 dark:text-neutral-400 group-hover:text-black dark:group-hover:text-white transition-colors">Export only selected redactions</span>
+              </label>
+            </div>
+
+            <div className="flex gap-4">
+              <button 
+                onClick={() => {
+                  const redactionsToExport = exportOnlySelected 
+                    ? activeFile.redactions.filter(r => r.isSelected)
+                    : activeFile.redactions;
+
+                  const data = redactionsToExport.map(r => ({
+                    page: r.pageIndex + 1,
+                    type: r.type,
+                    label: r.label || 'N/A',
+                    text: r.text || 'N/A',
+                    x: `${r.x.toFixed(2)}%`,
+                    y: `${r.y.toFixed(2)}%`,
+                    width: `${r.width.toFixed(2)}%`,
+                    height: `${r.height.toFixed(2)}%`,
+                    comment: r.comment || ''
+                  }));
+                  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement('a');
+                  a.href = url;
+                  a.download = `${activeFile.name}_redaction_report.json`;
+                  a.click();
+                }}
+                className="flex-1 py-3 bg-neutral-100 dark:bg-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-700 rounded-xl font-bold transition-colors flex items-center justify-center gap-2"
+              >
+                Export as JSON
+              </button>
+              <button 
+                onClick={() => {
+                  const redactionsToExport = exportOnlySelected 
+                    ? activeFile.redactions.filter(r => r.isSelected)
+                    : activeFile.redactions;
+
+                  const headers = ['Page', 'Type', 'Label', 'Matched Text', 'X', 'Y', 'Width', 'Height', 'Comment'];
+                  const rows = redactionsToExport.map(r => [
+                    r.pageIndex + 1,
+                    r.type,
+                    `"${(r.label || '').replace(/"/g, '""')}"`,
+                    `"${(r.text || '').replace(/"/g, '""')}"`,
+                    `${r.x.toFixed(2)}%`,
+                    `${r.y.toFixed(2)}%`,
+                    `${r.width.toFixed(2)}%`,
+                    `${r.height.toFixed(2)}%`,
+                    `"${(r.comment || '').replace(/"/g, '""')}"`
+                  ]);
+                  const csvContent = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+                  const blob = new Blob([csvContent], { type: 'text/csv' });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement('a');
+                  a.href = url;
+                  a.download = `${activeFile.name}_redaction_report.csv`;
+                  a.click();
+                }}
+                className="flex-1 py-3 bg-neutral-100 dark:bg-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-700 rounded-xl font-bold transition-colors flex items-center justify-center gap-2"
+              >
+                Export as CSV
+              </button>
             </div>
           </section>
         )}
@@ -1625,16 +1990,47 @@ function SettingsView({ settings, setSettings, onBack, activeFile, setFiles }: {
             <h3 className="font-bold text-xl">Redaction Style</h3>
           </div>
           
-          <div className="flex items-center justify-between">
-            <span className="text-neutral-500">Redaction Color</span>
-            <div className="flex items-center gap-3">
-              <input 
-                type="color" 
-                value={settings.redactionColor}
-                onChange={(e) => setSettings(prev => ({ ...prev, redactionColor: e.target.value }))}
-                className="w-10 h-10 rounded-lg cursor-pointer border-none bg-transparent"
-              />
-              <span className="font-mono text-sm uppercase">{settings.redactionColor}</span>
+          <div className="space-y-6">
+            <div className="flex items-center justify-between">
+              <span className="text-neutral-500">Redaction Color</span>
+              <div className="flex items-center gap-3">
+                <input 
+                  type="color" 
+                  value={settings.redactionColor}
+                  onChange={(e) => setSettings(prev => ({ ...prev, redactionColor: e.target.value }))}
+                  className="w-10 h-10 rounded-lg cursor-pointer border-none bg-transparent"
+                />
+                <span className="font-mono text-sm uppercase">{settings.redactionColor}</span>
+              </div>
+            </div>
+
+            <div className="space-y-3">
+              <label className="block text-sm font-medium text-neutral-500 mb-2">Fill Style</label>
+              <div className="grid grid-cols-3 gap-3">
+                {(['solid', 'pattern', 'outline'] as RedactionStyle[]).map(style => (
+                  <button
+                    key={style}
+                    onClick={() => setSettings(prev => ({ ...prev, redactionStyle: style }))}
+                    className={cn(
+                      "py-3 rounded-xl border-2 transition-all flex flex-col items-center gap-2",
+                      settings.redactionStyle === style 
+                        ? "border-black dark:border-white bg-neutral-50 dark:bg-neutral-800" 
+                        : "border-neutral-100 dark:border-neutral-800 hover:border-neutral-200 dark:hover:border-neutral-700"
+                    )}
+                  >
+                    <div 
+                      className="w-8 h-8 rounded border border-neutral-200 dark:border-neutral-700"
+                      style={{
+                        backgroundColor: style === 'outline' ? 'transparent' : settings.redactionColor,
+                        borderWidth: style === 'outline' ? '2px' : '1px',
+                        borderColor: settings.redactionColor,
+                        backgroundImage: style === 'pattern' ? `repeating-linear-gradient(45deg, transparent, transparent 5px, rgba(255,255,255,0.2) 5px, rgba(255,255,255,0.2) 10px)` : 'none'
+                      }}
+                    />
+                    <span className="text-[10px] font-bold uppercase tracking-wider">{style}</span>
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
         </section>
