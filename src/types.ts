@@ -62,6 +62,41 @@ export interface BatchRuleSet {
   sensitiveTerms: string;
 }
 
+export interface CompanyRule {
+  id: string;
+  name: string;
+  patterns: string[]; // Regex patterns
+  sensitiveTerms: string[];
+  learnedCoordinates?: {
+    pageIndex: number;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    label: string;
+  }[];
+  identifiers?: string[]; // Keywords that identify this company
+  description?: string;
+}
+
+export interface TrainingSession {
+  id: string;
+  originalFile?: File;
+  redactedFile?: File;
+  status: 'idle' | 'analyzing' | 'completed' | 'error';
+  learnedData?: {
+    companyName: string;
+    suggestedRules: CompanyRule;
+  };
+}
+
+export interface AIDetectionConfig {
+  piiEnabled: boolean;
+  barcodesEnabled: boolean;
+  companyDataEnabled: boolean;
+  sensitivity: number; // 0-1
+}
+
 export interface AppSettings {
   theme: Theme;
   redactionColor: string;
@@ -69,6 +104,21 @@ export interface AppSettings {
   toolbar: ToolbarToolConfig[];
   fileNamePattern: string;
   savedBatchRules: BatchRuleSet[];
+  companyRules: CompanyRule[];
+  aiDefaults: AIDetectionConfig;
+  companyProfile?: {
+    name: string;
+    contactDetails?: string;
+    content: string; // base64 or text summary
+  };
+  searchHistory: string[];
+  customTheme?: {
+    primaryColor: string;
+    secondaryColor: string;
+    accentColor: string;
+    fontFamily?: string;
+    canvasBgColor?: string;
+  };
   shortcuts: {
     undo: string;
     redo: string;

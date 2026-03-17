@@ -3,19 +3,20 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { 
   Upload, FileText, Settings, Layers, 
   Download, Trash2, CheckCircle2, AlertCircle,
-  Undo, Redo, Search, ChevronLeft, ChevronRight,
+  Undo, Redo, Search, ChevronLeft, ChevronRight, Zap,
   Type as TypeIcon, Square, Highlighter, Sun, Moon,
   Monitor, Palette, Keyboard, X, Plus, Play, RefreshCw,
   Barcode, QrCode, GripVertical, Eye, EyeOff, ArrowUp, ArrowDown,
-  Save, Bookmark
+  Save, Bookmark, Brain, MousePointer2, Move
 } from 'lucide-react';
-import { PDFFile, RedactionBox, AppSettings, Theme, OCRResult, BatchRuleSet, RedactionStyle } from './types';
+import { PDFFile, RedactionBox, AppSettings, Theme, OCRResult, BatchRuleSet, RedactionStyle, CompanyRule, TrainingSession } from './types';
 import { cn, formatFileName } from './lib/utils';
 import { PDFDocument, rgb } from 'pdf-lib';
 import { Document, Page, pdfjs } from 'react-pdf';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { Tooltip } from './components/Tooltip';
 import { GoogleGenAI, Type } from "@google/genai";
+import { performLocalOCR, detectPIILocal, detectSensitiveTermsLocal } from './lib/ai';
 import 'react-pdf/dist/Page/AnnotationLayer.css';
 import 'react-pdf/dist/Page/TextLayer.css';
 
@@ -35,6 +36,28 @@ const DEFAULT_SETTINGS: AppSettings = {
   ],
   fileNamePattern: '{name}_redacted',
   savedBatchRules: [],
+  companyRules: [],
+  aiDefaults: {
+    piiEnabled: true,
+    barcodesEnabled: true,
+    companyDataEnabled: true,
+  },
+  companyProfile: {
+    name: '',
+    contactDetails: '',
+    content: '',
+  },
+  searchHistory: [
+    'Confidential', 'Internal', 'Draft', 'Proprietary', 'Private', 
+    'Sensitive', 'Restricted', 'Classified', 'Top Secret', 'Eyes Only'
+  ],
+  customTheme: {
+    primaryColor: '#000000',
+    secondaryColor: '#ffffff',
+    accentColor: '#ef4444',
+    fontFamily: 'Inter',
+    canvasBgColor: '#f5f5f5'
+  },
   shortcuts: {
     undo: 'Ctrl+Z',
     redo: 'Ctrl+Y',
@@ -48,7 +71,7 @@ const DEFAULT_SETTINGS: AppSettings = {
 };
 
 export default function App() {
-  const [view, setView] = useState<'home' | 'editor' | 'batch' | 'settings'>('home');
+  const [view, setView] = useState<'home' | 'editor' | 'batch' | 'settings' | 'training'>('home');
   const [files, setFiles] = useState<PDFFile[]>([]);
   const [activeFileId, setActiveFileId] = useState<string | null>(null);
   const [settings, setSettings] = useState<AppSettings>(() => {
@@ -84,8 +107,39 @@ export default function App() {
     localStorage.setItem('redactio-settings', JSON.stringify(settings));
     
     const updateTheme = () => {
-      const isDark = settings.theme === 'dark' || 
+      let isDark = settings.theme === 'dark' || 
         (settings.theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+      
+      if (settings.theme === 'custom' && settings.customTheme) {
+        const { primaryColor, secondaryColor, accentColor, fontFamily } = settings.customTheme;
+        document.documentElement.style.setProperty('--primary', primaryColor);
+        document.documentElement.style.setProperty('--secondary', secondaryColor);
+        document.documentElement.style.setProperty('--accent', accentColor);
+        if (fontFamily) {
+          document.documentElement.style.setProperty('--font-family', fontFamily);
+        }
+        
+        const checkIsDark = (color: string) => {
+          const hex = color.replace('#', '');
+          const r = parseInt(hex.substring(0, 2), 16);
+          const g = parseInt(hex.substring(2, 4), 16);
+          const b = parseInt(hex.substring(4, 6), 16);
+          const brightness = (r * 299 + g * 587 + b * 114) / 1000;
+          return brightness < 128;
+        };
+        
+        isDark = checkIsDark(primaryColor);
+        document.documentElement.style.setProperty('--text-primary', isDark ? '#ffffff' : '#000000');
+        document.documentElement.style.setProperty('--bg-color', primaryColor);
+      } else {
+        document.documentElement.style.removeProperty('--primary');
+        document.documentElement.style.removeProperty('--secondary');
+        document.documentElement.style.removeProperty('--accent');
+        document.documentElement.style.removeProperty('--font-family');
+        document.documentElement.style.removeProperty('--text-primary');
+        document.documentElement.style.removeProperty('--bg-color');
+      }
+
       document.documentElement.classList.toggle('dark', isDark);
     };
 
@@ -136,6 +190,17 @@ export default function App() {
         </div>
 
         <div className="flex items-center gap-2">
+          <Tooltip title="AI Training Lab" description="Train the AI with original and redacted documents." side="bottom">
+            <button 
+              onClick={() => setView('training')}
+              className={cn(
+                "p-2 rounded-lg transition-colors",
+                view === 'training' ? "bg-neutral-200 dark:bg-neutral-800" : "hover:bg-neutral-100 dark:hover:bg-neutral-900"
+              )}
+            >
+              <Brain className="w-5 h-5" />
+            </button>
+          </Tooltip>
           <Tooltip title="Batch Processing" description="Process multiple documents at once using AI." side="bottom">
             <button 
               onClick={() => setView('batch')}
@@ -202,6 +267,7 @@ export default function App() {
               <EditorView 
                 file={activeFile} 
                 settings={settings} 
+                setSettings={setSettings}
                 onBack={() => setView('home')} 
                 addAlert={addAlert}
                 setFiles={setFiles}
@@ -242,6 +308,21 @@ export default function App() {
               />
             </motion.div>
           )}
+
+          {view === 'training' && (
+            <motion.div
+              key="training"
+              initial={{ opacity: 0, x: 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -20 }}
+            >
+              <TrainingView 
+                settings={settings} 
+                setSettings={setSettings} 
+                addAlert={addAlert}
+              />
+            </motion.div>
+          )}
         </AnimatePresence>
       </main>
 
@@ -278,9 +359,10 @@ export default function App() {
   );
 }
 
-function EditorView({ file, settings, onBack, addAlert, setFiles }: { 
+function EditorView({ file, settings, setSettings, onBack, addAlert, setFiles }: { 
   file: PDFFile; 
   settings: AppSettings; 
+  setSettings: React.Dispatch<React.SetStateAction<AppSettings>>;
   onBack: () => void;
   addAlert: (type: any, msg: string) => void;
   setFiles: React.Dispatch<React.SetStateAction<PDFFile[]>>;
@@ -300,6 +382,18 @@ function EditorView({ file, settings, onBack, addAlert, setFiles }: {
   const [currentBox, setCurrentBox] = useState<{ x: number; y: number; width: number; height: number } | null>(null);
   const [currentPath, setCurrentPath] = useState<{ x: number; y: number }[]>([]);
   const [tempHighlights, setTempHighlights] = useState<{ x: number; y: number; width: number; height: number; pageIndex: number }[]>([]);
+  const [commentModal, setCommentModal] = useState<{ isOpen: boolean, redactionId: string, comment: string }>({ isOpen: false, redactionId: '', comment: '' });
+  const [showSearchPopup, setShowSearchPopup] = useState(false);
+  const [showConfirmApply, setShowConfirmApply] = useState(false);
+  const [showMobileTools, setShowMobileTools] = useState(false);
+  const [activeInteraction, setActiveInteraction] = useState<{
+    type: 'drag' | 'resize';
+    redactionId: string;
+    handle?: string;
+    initialMouse: { x: number; y: number };
+    initialRect: { x: number; y: number; width: number; height: number };
+  } | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
 
   const addToHistory = (newRedactions: RedactionBox[]) => {
     const nextHistory = [...history.slice(0, historyIndex + 1), newRedactions].slice(-50);
@@ -360,6 +454,15 @@ function EditorView({ file, settings, onBack, addAlert, setFiles }: {
     const x = ((e.clientX - rect.left) / rect.width) * 100;
     const y = ((e.clientY - rect.top) / rect.height) * 100;
     
+    if (tool === 'selection') {
+      // Check if we clicked a handle or a redaction
+      // This is handled by the elements themselves via stopPropagation
+      // But we need a fallback for drag-selection box
+      setDrawStart({ x, y });
+      setIsDrawing(true);
+      return;
+    }
+
     if (tool === 'highlight') {
       setCurrentPath([{ x, y }]);
     } else {
@@ -369,10 +472,41 @@ function EditorView({ file, settings, onBack, addAlert, setFiles }: {
   };
 
   const handleMouseMove = (e: React.MouseEvent) => {
-    if (!isDrawing) return;
     const rect = e.currentTarget.getBoundingClientRect();
     const x = ((e.clientX - rect.left) / rect.width) * 100;
     const y = ((e.clientY - rect.top) / rect.height) * 100;
+
+    if (activeInteraction) {
+      const dx = x - activeInteraction.initialMouse.x;
+      const dy = y - activeInteraction.initialMouse.y;
+
+      const updated = redactions.map(r => {
+        if (r.id === activeInteraction.redactionId) {
+          if (activeInteraction.type === 'drag') {
+            return {
+              ...r,
+              x: activeInteraction.initialRect.x + dx,
+              y: activeInteraction.initialRect.y + dy
+            };
+          } else if (activeInteraction.type === 'resize' && activeInteraction.handle) {
+            let { x: rx, y: ry, width: rw, height: rh } = activeInteraction.initialRect;
+            const h = activeInteraction.handle;
+
+            if (h.includes('e')) rw += dx;
+            if (h.includes('w')) { rx += dx; rw -= dx; }
+            if (h.includes('s')) rh += dy;
+            if (h.includes('n')) { ry += dy; rh -= dy; }
+
+            return { ...r, x: rx, y: ry, width: Math.max(1, rw), height: Math.max(1, rh) };
+          }
+        }
+        return r;
+      });
+      setRedactions(updated);
+      return;
+    }
+
+    if (!isDrawing) return;
     
     if (tool === 'highlight') {
       setCurrentPath(prev => [...prev, { x, y }]);
@@ -387,6 +521,12 @@ function EditorView({ file, settings, onBack, addAlert, setFiles }: {
   };
 
   const handleMouseUp = () => {
+    if (activeInteraction) {
+      addToHistory(redactions);
+      setActiveInteraction(null);
+      return;
+    }
+
     if (isDrawing) {
       if (tool === 'selection' && currentBox) {
         const updated = redactions.map(r => {
@@ -474,6 +614,14 @@ function EditorView({ file, settings, onBack, addAlert, setFiles }: {
 
   const [isProcessing, setIsProcessing] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const commonSuggestions = [
+    'Name', 'Email', 'Phone', 'SSN', 'Address', 'Credit Card', 'Date of Birth', 
+    'Password', 'API Key', 'Secret', 'Confidential', 'Internal Only', 
+    'Draft', 'Proprietary', 'Trade Secret', 'Financial Data', 'Medical Record',
+    'Customer ID', 'Account Number', 'IBAN', 'Passport Number', 'Driver License'
+  ];
+  const allSuggestions = Array.from(new Set([...commonSuggestions, ...(settings.searchHistory || [])]));
   const [isSearching, setIsSearching] = useState(false);
   const [searchProgress, setSearchProgress] = useState(0);
   const [useRegex, setUseRegex] = useState(false);
@@ -624,6 +772,13 @@ function EditorView({ file, settings, onBack, addAlert, setFiles }: {
     }
   };
 
+  const clearSearchMatches = () => {
+    setTempHighlights([]);
+    setSearchQuery('');
+    setRedactions(prev => prev.filter(r => r.type !== 'text' || !r.label?.includes('Search')));
+    addAlert('info', 'Search matches cleared');
+  };
+
   const triggerOCR = async () => {
     if (!pdf) return;
     setOcrStatus('loading');
@@ -703,62 +858,136 @@ function EditorView({ file, settings, onBack, addAlert, setFiles }: {
       return;
     }
     setIsProcessing(true);
-    addAlert('info', 'AI is scanning the document for sensitive fields...');
+    addAlert('info', 'Local AI is scanning the document for sensitive fields...');
     
     try {
       const canvas = canvasRef.current;
-      const imageData = canvas.toDataURL('image/png').split(',')[1];
+      const imageData = canvas.toDataURL('image/png');
       
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-      const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: {
-          parts: [
-            { inlineData: { data: imageData, mimeType: "image/png" } },
-            { text: "Analyze this document image and identify sensitive information that should be redacted. Specifically look for and redact: Report numbers, physical addresses, PO numbers (Purchase Orders), lab numbers, sample IDs, barcodes, and QR codes. Also identify PII (Names, Emails, Phone Numbers, SSNs) and any company-specific sensitive data. For each item found, provide its bounding box as percentages of the image width and height (x, y, width, height where x and y are the top-left corner) and a label describing what it is. Return the result as a JSON array of objects like this: [{\"x\": 10.5, \"y\": 20.1, \"width\": 15.0, \"height\": 2.5, \"label\": \"REPORT NO.\"}]. Only return the JSON array, nothing else." }
-          ]
-        },
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                x: { type: Type.NUMBER },
-                y: { type: Type.NUMBER },
-                width: { type: Type.NUMBER },
-                height: { type: Type.NUMBER },
-                label: { type: Type.STRING }
-              },
-              required: ["x", "y", "width", "height", "label"]
-            }
+      // 1. Perform Local OCR
+      const ocrData = await performLocalOCR(imageData) as any;
+      const text = ocrData.text;
+      const words = ocrData.words;
+
+      // 2. Company Identification (Local)
+      let matchedRule: CompanyRule | null = null;
+      if (settings.companyRules?.length > 0) {
+        for (const rule of settings.companyRules) {
+          const identifiers = rule.identifiers || [];
+          if (identifiers.some(id => text.toLowerCase().includes(id.toLowerCase()))) {
+            matchedRule = rule;
+            break;
           }
         }
-      });
+        if (matchedRule) {
+          addAlert('info', `Detected Company: ${matchedRule.name}. Applying learned patterns...`);
+        }
+      }
+      
+      const newAutoRedactions: RedactionBox[] = [];
 
-      const results = JSON.parse(response.text || "[]");
-      const newAutoRedactions: RedactionBox[] = results.map((res: any, index: number) => ({
-        id: `auto-${Date.now()}-${index}`,
-        pageIndex: pageNumber - 1,
-        x: res.x,
-        y: res.y,
-        width: res.width,
-        height: res.height,
-        label: res.label,
-        type: 'auto',
-        isSelected: true
-      }));
+      // 3. Apply Learned Coordinates
+      if (matchedRule?.learnedCoordinates) {
+        matchedRule.learnedCoordinates
+          .filter(c => c.pageIndex === pageNumber - 1)
+          .forEach((coord, index) => {
+            newAutoRedactions.push({
+              id: `learned-${Date.now()}-${index}`,
+              pageIndex: pageNumber - 1,
+              x: coord.x,
+              y: coord.y,
+              width: coord.width,
+              height: coord.height,
+              label: coord.label || 'Learned Area',
+              type: 'auto',
+              isSelected: true
+            });
+          });
+      }
+
+      // 4. Local PII Detection
+      if (settings.aiDefaults?.piiEnabled) {
+        const piiResults = detectPIILocal(text, words, settings.aiDefaults.sensitivity);
+        piiResults.forEach((res, index) => {
+          newAutoRedactions.push({
+            id: `pii-${Date.now()}-${index}`,
+            pageIndex: pageNumber - 1,
+            x: (res.x / canvas.width) * 100,
+            y: (res.y / canvas.height) * 100,
+            width: (res.width / canvas.width) * 100,
+            height: (res.height / canvas.height) * 100,
+            label: res.label,
+            type: 'auto',
+            isSelected: true
+          });
+        });
+      }
+
+      // 5. Local Sensitive Terms & Regex Patterns Detection
+      const termsToSearch = [...(matchedRule?.sensitiveTerms || [])];
+      const patternsToSearch = [...(matchedRule?.patterns || [])];
+      
+      if (settings.aiDefaults?.companyDataEnabled && (termsToSearch.length > 0 || patternsToSearch.length > 0)) {
+        const termResults = detectSensitiveTermsLocal(text, words, termsToSearch, settings.aiDefaults.sensitivity);
+        termResults.forEach((res, index) => {
+          newAutoRedactions.push({
+            id: `term-${Date.now()}-${index}`,
+            pageIndex: pageNumber - 1,
+            x: (res.x / canvas.width) * 100,
+            y: (res.y / canvas.height) * 100,
+            width: (res.width / canvas.width) * 100,
+            height: (res.height / canvas.height) * 100,
+            label: 'SENSITIVE TERM',
+            type: 'auto',
+            isSelected: true
+          });
+        });
+
+        // Regex Pattern Matching
+        patternsToSearch.forEach((pattern, pIndex) => {
+          try {
+            const regex = new RegExp(pattern, 'gi');
+            let match;
+            while ((match = regex.exec(text)) !== null) {
+              const matchedText = match[0];
+              const matchIndex = match.index;
+              
+              // Find coordinates for this match (approximate by matching words)
+              const matchedWords = words.filter((w: any) => matchedText.includes(w.text));
+              if (matchedWords.length > 0) {
+                const minX = Math.min(...matchedWords.map((w: any) => w.bbox.x0));
+                const minY = Math.min(...matchedWords.map((w: any) => w.bbox.y0));
+                const maxX = Math.max(...matchedWords.map((w: any) => w.bbox.x1));
+                const maxY = Math.max(...matchedWords.map((w: any) => w.bbox.y1));
+
+                newAutoRedactions.push({
+                  id: `regex-${Date.now()}-${pIndex}-${matchIndex}`,
+                  pageIndex: pageNumber - 1,
+                  x: (minX / canvas.width) * 100,
+                  y: (minY / canvas.height) * 100,
+                  width: ((maxX - minX) / canvas.width) * 100,
+                  height: ((maxY - minY) / canvas.height) * 100,
+                  label: 'REGEX MATCH',
+                  type: 'auto',
+                  isSelected: true
+                });
+              }
+            }
+          } catch (e) {
+            console.error('Invalid regex:', pattern);
+          }
+        });
+      }
 
       const updatedRedactions = [...redactions, ...newAutoRedactions];
       setRedactions(updatedRedactions);
       addToHistory(updatedRedactions);
       setIsProcessing(false);
-      addAlert('success', `Detection complete! Found ${newAutoRedactions.length} sensitive areas.`);
+      addAlert('success', `Local detection complete! Found ${newAutoRedactions.length} sensitive areas.`);
     } catch (error) {
       console.error(error);
       setIsProcessing(false);
-      addAlert('error', 'Failed to detect fields with AI.');
+      addAlert('error', 'Local detection failed.');
     }
   };
 
@@ -768,114 +997,33 @@ function EditorView({ file, settings, onBack, addAlert, setFiles }: {
       return;
     }
     setIsOCRing(true);
-    addAlert('info', 'Performing OCR on current page...');
+    addAlert('info', 'Performing Local OCR on current page...');
     
     try {
       const canvas = canvasRef.current;
-      const imageData = canvas.toDataURL('image/png').split(',')[1];
+      const imageData = canvas.toDataURL('image/png');
+      const ocrData = await performLocalOCR(imageData) as any;
       
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-      const response = await ai.models.generateContent({
-        model: "gemini-3-flash-latest",
-        contents: {
-          parts: [
-            { inlineData: { data: imageData, mimeType: "image/png" } },
-            { text: "Perform OCR on this image. Extract all text and their bounding boxes as percentages of the image width and height. Return the result as a JSON array of objects like this: [{\"x\": 10.5, \"y\": 20.1, \"width\": 15.0, \"height\": 2.5, \"text\": \"Extracted text\"}]. Only return the JSON array, nothing else." }
-          ]
-        },
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                x: { type: Type.NUMBER },
-                y: { type: Type.NUMBER },
-                width: { type: Type.NUMBER },
-                height: { type: Type.NUMBER },
-                text: { type: Type.STRING }
-              },
-              required: ["x", "y", "width", "height", "text"]
-            }
-          }
-        }
-      });
+      const results: OCRResult[] = ocrData.words.map((word: any) => ({
+        text: word.text,
+        x: (word.bbox.x0 / canvas.width) * 100,
+        y: (word.bbox.y0 / canvas.height) * 100,
+        width: ((word.bbox.x1 - word.bbox.x0) / canvas.width) * 100,
+        height: ((word.bbox.y1 - word.bbox.y0) / canvas.height) * 100
+      }));
 
-      const results = JSON.parse(response.text || "[]") as OCRResult[];
       setOcrResults(prev => ({ ...prev, [pageNumber - 1]: results }));
-      addAlert('success', `OCR complete. Found ${results.length} text elements.`);
+      addAlert('success', `Local OCR complete. Found ${results.length} text elements.`);
     } catch (error) {
       console.error(error);
-      addAlert('error', 'Failed to perform OCR.');
+      addAlert('error', 'Local OCR failed.');
     } finally {
       setIsOCRing(false);
     }
   };
 
   const handleDetectBarcodes = async () => {
-    if (!canvasRef.current) {
-      addAlert('error', 'Document not ready for scanning.');
-      return;
-    }
-    setIsProcessing(true);
-    addAlert('info', 'AI is scanning for barcodes and QR codes...');
-    
-    try {
-      const canvas = canvasRef.current;
-      const imageData = canvas.toDataURL('image/png').split(',')[1];
-      
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-      const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: {
-          parts: [
-            { inlineData: { data: imageData, mimeType: "image/png" } },
-            { text: "Analyze this document image and identify ALL barcodes and QR codes. For each code found, provide its bounding box as percentages of the image width and height (x, y, width, height where x and y are the top-left corner). Also, try to decode the content of the barcode/QR code and use it as the label. If decoding fails, use 'BARCODE' or 'QR CODE' as the label. Return the result as a JSON array of objects like this: [{\"x\": 10.5, \"y\": 20.1, \"width\": 15.0, \"height\": 2.5, \"label\": \"123456789\"}]. Only return the JSON array, nothing else." }
-          ]
-        },
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                x: { type: Type.NUMBER },
-                y: { type: Type.NUMBER },
-                width: { type: Type.NUMBER },
-                height: { type: Type.NUMBER },
-                label: { type: Type.STRING }
-              },
-              required: ["x", "y", "width", "height", "label"]
-            }
-          }
-        }
-      });
-
-      const results = JSON.parse(response.text || "[]");
-      const newBarcodeRedactions: RedactionBox[] = results.map((res: any, index: number) => ({
-        id: `barcode-${Date.now()}-${index}`,
-        pageIndex: pageNumber - 1,
-        x: res.x,
-        y: res.y,
-        width: res.width,
-        height: res.height,
-        label: res.label,
-        type: 'auto',
-        isSelected: true
-      }));
-
-      const updatedRedactions = [...redactions, ...newBarcodeRedactions];
-      setRedactions(updatedRedactions);
-      addToHistory(updatedRedactions);
-      setIsProcessing(false);
-      addAlert('success', `Barcode detection complete! Found ${newBarcodeRedactions.length} codes.`);
-    } catch (error) {
-      console.error(error);
-      setIsProcessing(false);
-      addAlert('error', 'Failed to detect barcodes with AI.');
-    }
+    addAlert('info', 'Local barcode detection is limited in this version. Please use manual box tools for barcodes.');
   };
 
   const applyRedactions = async () => {
@@ -933,162 +1081,280 @@ function EditorView({ file, settings, onBack, addAlert, setFiles }: {
   };
 
   return (
-    <div className="flex flex-col h-[calc(100vh-12rem)]">
-      {/* Toolbar */}
-      <div className="flex items-center gap-4 mb-6 bg-white dark:bg-neutral-900 p-4 rounded-2xl shadow-sm border border-neutral-200 dark:border-neutral-800 flex-wrap">
-        <button onClick={onBack} className="p-2 hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded-lg">
-          <ChevronLeft className="w-5 h-5" />
-        </button>
-        <div className="h-6 w-px bg-neutral-200 dark:bg-neutral-800" />
+    <div className="flex flex-col h-[calc(100vh-12rem)] relative overflow-hidden">
+      {/* Desktop Layout */}
+      <div className="hidden md:flex flex-1 gap-4 overflow-hidden">
+        {/* Left Toolbar (Photoshop-like) */}
+        <div className="w-16 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-3xl flex flex-col items-center py-6 gap-6 shadow-sm">
+          <button onClick={onBack} className="p-2 hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded-xl transition-colors">
+            <ChevronLeft className="w-5 h-5" />
+          </button>
+          <div className="w-8 h-px bg-neutral-100 dark:bg-neutral-800" />
+          
+          <div className="flex flex-col gap-4">
+            <Tooltip title="Select Tool" description="Select, move, and resize redactions." shortcut="V">
+              <button 
+                onClick={() => setTool('selection')}
+                className={cn("p-3 rounded-xl transition-all", tool === 'selection' ? "bg-black text-white dark:bg-white dark:text-black shadow-lg" : "hover:bg-neutral-100 dark:hover:bg-neutral-800")}
+              >
+                <MousePointer2 className="w-5 h-5" />
+              </button>
+            </Tooltip>
+            <Tooltip title="Text Tool" description="Select and redact text directly from the document." shortcut="T">
+              <button 
+                onClick={() => setTool('text')}
+                className={cn("p-3 rounded-xl transition-all", tool === 'text' ? "bg-black text-white dark:bg-white dark:text-black shadow-lg" : "hover:bg-neutral-100 dark:hover:bg-neutral-800")}
+              >
+                <TypeIcon className="w-5 h-5" />
+              </button>
+            </Tooltip>
+            <Tooltip title="Box Tool" description="Draw a rectangular box over any area to redact it." shortcut="B">
+              <button 
+                onClick={() => setTool('box')}
+                className={cn("p-3 rounded-xl transition-all", tool === 'box' ? "bg-black text-white dark:bg-white dark:text-black shadow-lg" : "hover:bg-neutral-100 dark:hover:bg-neutral-800")}
+              >
+                <Square className="w-5 h-5" />
+              </button>
+            </Tooltip>
+            <Tooltip title="Highlight Tool" description="Free-form highlight tool for quick redactions." shortcut="H">
+              <button 
+                onClick={() => setTool('highlight')}
+                className={cn("p-3 rounded-xl transition-all", tool === 'highlight' ? "bg-black text-white dark:bg-white dark:text-black shadow-lg" : "hover:bg-neutral-100 dark:hover:bg-neutral-800")}
+              >
+                <Highlighter className="w-5 h-5" />
+              </button>
+            </Tooltip>
+          </div>
 
-        <div className="flex items-center gap-4 flex-1 flex-wrap">
-          {settings.toolbar.filter(t => t.visible).map((toolItem, index, visibleTools) => {
-            const isLastAction = toolItem.id === 'action' && index === visibleTools.length - 1;
-            
-            const renderTool = () => {
-              switch(toolItem.id) {
-                case 'selection':
-                  return (
-                    <div className="flex bg-neutral-100 dark:bg-neutral-800 p-1 rounded-xl">
-                      <Tooltip title="Text Tool" description="Select and redact text directly from the document." shortcut="T">
-                        <button 
-                          onClick={() => setTool('text')}
-                          className={cn("p-2 rounded-lg transition-all", tool === 'text' ? "bg-white dark:bg-neutral-700 shadow-sm" : "hover:opacity-70")}
-                        >
-                          <TypeIcon className="w-5 h-5" />
-                        </button>
-                      </Tooltip>
-                      <Tooltip title="Box Tool" description="Draw a rectangular box over any area to redact it." shortcut="B">
-                        <button 
-                          onClick={() => setTool('box')}
-                          className={cn("p-2 rounded-lg transition-all", tool === 'box' ? "bg-white dark:bg-neutral-700 shadow-sm" : "hover:opacity-70")}
-                        >
-                          <Square className="w-5 h-5" />
-                        </button>
-                      </Tooltip>
-                      <Tooltip title="Highlight Tool" description="Free-form highlight tool for quick redactions." shortcut="H">
-                        <button 
-                          onClick={() => setTool('highlight')}
-                          className={cn("p-2 rounded-lg transition-all", tool === 'highlight' ? "bg-white dark:bg-neutral-700 shadow-sm" : "hover:opacity-70")}
-                        >
-                          <Highlighter className="w-5 h-5" />
-                        </button>
-                      </Tooltip>
-                    </div>
-                  );
-                case 'history':
-                  return (
-                    <div className="flex items-center gap-2">
-                      <Tooltip title="Undo" description="Revert your last action." shortcut="Ctrl+Z">
-                        <button 
-                          onClick={undo}
-                          disabled={historyIndex === 0}
-                          className="p-2 hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded-lg disabled:opacity-30"
-                        >
-                          <Undo className="w-5 h-5" />
-                        </button>
-                      </Tooltip>
-                      <Tooltip title="Redo" description="Restore a previously undone action." shortcut="Ctrl+Y">
-                        <button 
-                          onClick={redo}
-                          disabled={historyIndex === history.length - 1}
-                          className="p-2 hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded-lg disabled:opacity-30"
-                        >
-                          <Redo className="w-5 h-5" />
-                        </button>
-                      </Tooltip>
-                    </div>
-                  );
-                case 'view':
-                  return (
-                    <div className="flex items-center gap-4">
-                      <div className="flex bg-neutral-100 dark:bg-neutral-800 p-1 rounded-xl">
-                        <Tooltip title="Zoom Out" description="Decrease the document view size.">
-                          <button onClick={handleZoomOut} className="p-2 hover:opacity-70"><Search className="w-4 h-4 -scale-x-100" /></button>
-                        </Tooltip>
-                        <span className="text-xs font-mono flex items-center px-2">{Math.round(scale * 100)}%</span>
-                        <Tooltip title="Zoom In" description="Increase the document view size.">
-                          <button onClick={handleZoomIn} className="p-2 hover:opacity-70"><Plus className="w-4 h-4" /></button>
-                        </Tooltip>
-                      </div>
-                      <div className="flex items-center gap-2 bg-neutral-100 dark:bg-neutral-800 px-3 py-1.5 rounded-xl">
-                        <Tooltip title="Previous Page" description="Go to the previous page." shortcut="Left Arrow">
-                          <button onClick={() => setPageNumber(p => Math.max(1, p - 1))}><ChevronLeft className="w-4 h-4" /></button>
-                        </Tooltip>
-                        <span className="text-sm font-medium min-w-[60px] text-center">{pageNumber} / {numPages}</span>
-                        <Tooltip title="Next Page" description="Go to the next page." shortcut="Right Arrow">
-                          <button onClick={() => setPageNumber(p => Math.min(numPages, p + 1))}><ChevronRight className="w-4 h-4" /></button>
-                        </Tooltip>
-                      </div>
-                    </div>
-                  );
-                case 'ai':
-                  return (
-                    <div className="flex items-center gap-2">
-                      <Tooltip title="Auto-Detect" description="Use AI to automatically find and mark sensitive fields like names and addresses.">
-                        <button 
-                          onClick={handleAutoDetect}
-                          disabled={isProcessing}
-                          className="flex items-center gap-2 bg-black dark:bg-white text-white dark:text-black px-4 py-2 rounded-xl font-medium hover:opacity-90 transition-opacity disabled:opacity-50"
-                        >
-                          <Search className="w-4 h-4" />
-                          Auto-Detect
-                        </button>
-                      </Tooltip>
-                      <Tooltip title="Detect Codes" description="Scan the document for Barcodes and QR Codes to redact them.">
-                        <button 
-                          onClick={handleDetectBarcodes}
-                          disabled={isProcessing}
-                          className="flex items-center gap-2 bg-neutral-100 dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 px-4 py-2 rounded-xl font-medium hover:opacity-80 transition-opacity disabled:opacity-50 border border-neutral-200 dark:border-neutral-700"
-                        >
-                          <div className="flex items-center -space-x-1">
-                            <Barcode className="w-4 h-4" />
-                            <QrCode className="w-4 h-4" />
-                          </div>
-                          Detect Codes
-                        </button>
-                      </Tooltip>
-                      <Tooltip title="OCR Page" description="Perform Optical Character Recognition on the current page to make text in images selectable and redactable.">
-                        <button 
-                          onClick={handleOCR}
-                          disabled={isOCRing || isProcessing}
-                          className="flex items-center gap-2 bg-neutral-100 dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 px-4 py-2 rounded-xl font-medium hover:opacity-80 transition-opacity disabled:opacity-50 border border-neutral-200 dark:border-neutral-700"
-                        >
-                          {isOCRing ? <RefreshCw className="w-4 h-4 animate-spin" /> : <FileText className="w-4 h-4" />}
-                          OCR Page
-                        </button>
-                      </Tooltip>
-                    </div>
-                  );
-                case 'action':
-                  return (
-                    <Tooltip title="Apply & Save" description="Permanently apply all redactions and download the processed PDF." side="left">
-                      <button 
-                        onClick={applyRedactions}
-                        disabled={isProcessing}
-                        className={cn(
-                          "flex items-center gap-2 bg-emerald-600 text-white px-4 py-2 rounded-xl font-medium hover:bg-emerald-700 transition-colors disabled:opacity-50",
-                          isLastAction && "ml-auto"
-                        )}
-                      >
-                        <Download className="w-4 h-4" />
-                        Apply & Save
-                      </button>
-                    </Tooltip>
-                  );
-                default:
-                  return null;
-              }
-            };
+          <div className="w-8 h-px bg-neutral-100 dark:bg-neutral-800" />
 
-            return <React.Fragment key={toolItem.id}>{renderTool()}</React.Fragment>;
-          })}
+          <div className="flex flex-col gap-4">
+            <Tooltip title="Auto-Detect" description="Automatically find PII and sensitive terms." shortcut="A">
+              <button 
+                onClick={handleAutoDetect}
+                disabled={isProcessing}
+                className="p-3 rounded-xl hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors disabled:opacity-50"
+              >
+                <Zap className="w-5 h-5" />
+              </button>
+            </Tooltip>
+            <Tooltip title="OCR Document" description="Extract text from the current page." shortcut="O">
+              <button 
+                onClick={handleOCR}
+                disabled={ocrStatus === 'loading'}
+                className="p-3 rounded-xl hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors disabled:opacity-50"
+              >
+                <FileText className="w-5 h-5" />
+              </button>
+            </Tooltip>
+            <Tooltip title="Search & Redact" description="Open search bar to find and redact text." shortcut="Ctrl+F">
+              <button 
+                onClick={() => setShowSearchPopup(!showSearchPopup)}
+                className={cn(
+                  "p-3 rounded-xl transition-all",
+                  showSearchPopup ? "bg-black text-white dark:bg-white dark:text-black shadow-lg" : "hover:bg-neutral-100 dark:hover:bg-neutral-800"
+                )}
+              >
+                <Search className="w-5 h-5" />
+              </button>
+            </Tooltip>
+          </div>
+
+          <div className="mt-auto flex flex-col gap-4">
+            <Tooltip title="Undo" description="Revert your last action." shortcut="Ctrl+Z">
+              <button 
+                onClick={undo}
+                disabled={historyIndex === 0}
+                className="p-3 rounded-xl hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors disabled:opacity-30"
+              >
+                <Undo className="w-5 h-5" />
+              </button>
+            </Tooltip>
+            <Tooltip title="Redo" description="Restore a previously undone action." shortcut="Ctrl+Y">
+              <button 
+                onClick={redo}
+                disabled={historyIndex === history.length - 1}
+                className="p-3 rounded-xl hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors disabled:opacity-30"
+              >
+                <Redo className="w-5 h-5" />
+              </button>
+            </Tooltip>
+          </div>
         </div>
-      </div>
 
-      <div className="flex gap-6 flex-1 overflow-hidden">
-        {/* PDF Viewer */}
-        <div className="flex-1 bg-neutral-200 dark:bg-neutral-800 rounded-3xl overflow-auto p-8 flex justify-center relative">
+        {/* Main Content Area */}
+        <div className="flex-1 flex flex-col gap-4 overflow-hidden">
+          {/* Top Info Bar */}
+          <div className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-3xl p-4 flex items-center justify-between shadow-sm">
+            <div className="flex items-center gap-4">
+              <div className="flex items-center gap-2 bg-neutral-100 dark:bg-neutral-800 px-3 py-1.5 rounded-xl">
+                <button onClick={() => setPageNumber(p => Math.max(1, p - 1))} className="p-1 hover:bg-neutral-200 dark:hover:bg-neutral-700 rounded-lg transition-colors"><ChevronLeft className="w-4 h-4" /></button>
+                <span className="text-sm font-bold min-w-[60px] text-center">{pageNumber} / {numPages}</span>
+                <button onClick={() => setPageNumber(p => Math.min(numPages, p + 1))} className="p-1 hover:bg-neutral-200 dark:hover:bg-neutral-700 rounded-lg transition-colors"><ChevronRight className="w-4 h-4" /></button>
+              </div>
+              <div className="h-4 w-px bg-neutral-200 dark:bg-neutral-800" />
+              <div className="flex items-center gap-2 bg-neutral-100 dark:bg-neutral-800 px-3 py-1.5 rounded-xl">
+                <button onClick={handleZoomOut} className="p-1 hover:bg-neutral-200 dark:hover:bg-neutral-700 rounded-lg transition-colors"><Search className="w-4 h-4 -scale-x-100" /></button>
+                <span className="text-xs font-mono font-bold">{Math.round(scale * 100)}%</span>
+                <button onClick={handleZoomIn} className="p-1 hover:bg-neutral-200 dark:hover:bg-neutral-700 rounded-lg transition-colors"><Plus className="w-4 h-4" /></button>
+              </div>
+            </div>
+            
+            <div className="flex items-center gap-3">
+              <button 
+                onClick={() => setShowConfirmApply(true)}
+                disabled={isProcessing || redactions.length === 0}
+                className="px-6 py-2 bg-black dark:bg-white text-white dark:text-black rounded-xl font-bold hover:opacity-90 transition-opacity disabled:opacity-50 flex items-center gap-2 shadow-lg"
+              >
+                {isProcessing ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+                Apply & Download
+              </button>
+            </div>
+          </div>
+
+          {/* PDF Viewer Container */}
+          <div className="flex-1 bg-neutral-200 dark:bg-neutral-800 rounded-3xl overflow-auto p-8 flex justify-center relative shadow-inner">
+            {/* Search Popup Bar */}
+          <AnimatePresence>
+            {showSearchPopup && (
+              <motion.div 
+                initial={{ opacity: 0, y: -20 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -20 }}
+                className="absolute top-4 left-1/2 -translate-x-1/2 z-[100] w-full max-w-2xl bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-2xl shadow-2xl p-4 flex flex-col gap-3"
+              >
+                <div className="flex gap-2 relative">
+                  <div className="flex-1 relative">
+                    <input 
+                      autoFocus
+                      type="text"
+                      placeholder={useRegex ? "Regex search..." : "Search text..."}
+                      value={searchQuery}
+                      onChange={(e) => {
+                        setSearchQuery(e.target.value);
+                        setShowSuggestions(true);
+                      }}
+                      onFocus={() => setShowSuggestions(true)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          handleSearchAndRedact();
+                          setShowSuggestions(false);
+                        }
+                      }}
+                      className="w-full px-4 py-2 bg-neutral-100 dark:bg-neutral-800 rounded-xl text-sm outline-none focus:ring-2 focus:ring-black dark:focus:ring-white pr-10"
+                    />
+                    <AnimatePresence>
+                      {showSuggestions && searchQuery && (
+                        <motion.div 
+                          initial={{ opacity: 0, y: -10 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0, y: -10 }}
+                          className="absolute left-0 right-0 top-full mt-2 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-xl shadow-xl z-[60] overflow-hidden"
+                        >
+                          {allSuggestions.filter(s => s.toLowerCase().includes(searchQuery.toLowerCase())).slice(0, 5).map(s => (
+                            <button
+                              key={s}
+                              onClick={() => {
+                                setSearchQuery(s);
+                                setShowSuggestions(false);
+                              }}
+                              className="w-full px-4 py-2 text-left text-sm hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors"
+                            >
+                              {s}
+                            </button>
+                          ))}
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                    {searchQuery && (
+                      <button 
+                        onClick={() => {
+                          setSearchQuery('');
+                          setShowSuggestions(false);
+                        }}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 p-1 hover:bg-neutral-200 dark:hover:bg-neutral-700 rounded-full transition-colors"
+                      >
+                        <X className="w-3 h-3 text-neutral-400" />
+                      </button>
+                    )}
+                  </div>
+                  <button 
+                    onClick={() => setUseRegex(!useRegex)}
+                    className={cn(
+                      "px-3 py-2 rounded-xl text-xs font-bold transition-colors border",
+                      useRegex ? "bg-black text-white dark:bg-white dark:text-black" : "bg-neutral-100 dark:bg-neutral-800 text-neutral-400"
+                    )}
+                    title="Use Regular Expression"
+                  >
+                    .*
+                  </button>
+                  <button 
+                    onClick={() => {
+                      handleSearchAndRedact();
+                      if (searchQuery && !settings.searchHistory.includes(searchQuery)) {
+                        setSettings(prev => ({ ...prev, searchHistory: [searchQuery, ...prev.searchHistory].slice(0, 20) }));
+                      }
+                    }}
+                    disabled={isSearching || !searchQuery}
+                    className="px-4 py-2 bg-black dark:bg-white text-white dark:text-black rounded-xl hover:opacity-90 transition-opacity disabled:opacity-50 relative overflow-hidden flex items-center gap-2"
+                  >
+                    {isSearching ? (
+                      <>
+                        <RefreshCw className="w-4 h-4 animate-spin" />
+                        <div 
+                          className="absolute bottom-0 left-0 h-1 bg-emerald-500 transition-all duration-300" 
+                          style={{ width: `${searchProgress}%` }}
+                        />
+                      </>
+                    ) : (
+                      <>
+                        <Search className="w-4 h-4" />
+                        <span className="text-xs font-bold">Search</span>
+                      </>
+                    )}
+                  </button>
+                  <button 
+                    onClick={() => setShowSearchPopup(false)}
+                    className="p-2 hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded-xl transition-colors"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+                <div className="flex items-center justify-between gap-4">
+                  <div className="flex gap-2 flex-1">
+                    <button 
+                      onClick={() => setIsCaseSensitive(!isCaseSensitive)}
+                      className={cn(
+                        "flex-1 py-1.5 rounded-lg text-[10px] font-bold transition-colors border",
+                        isCaseSensitive ? "bg-neutral-100 dark:bg-neutral-800 border-black dark:border-white" : "bg-transparent border-neutral-200 dark:border-neutral-800 text-neutral-400"
+                      )}
+                    >
+                      Case Sensitive
+                    </button>
+                    <button 
+                      onClick={() => setIsFuzzyMatch(!isFuzzyMatch)}
+                      className={cn(
+                        "flex-1 py-1.5 rounded-lg text-[10px] font-bold transition-colors border",
+                        isFuzzyMatch ? "bg-neutral-100 dark:bg-neutral-800 border-black dark:border-white" : "bg-transparent border-neutral-200 dark:border-neutral-800 text-neutral-400"
+                      )}
+                    >
+                      Fuzzy Match
+                    </button>
+                  </div>
+                  <div className="h-4 w-px bg-neutral-200 dark:border-neutral-800" />
+                  <button 
+                    onClick={clearSearchMatches}
+                    className="px-3 py-1.5 rounded-lg text-[10px] font-bold bg-red-50 dark:bg-red-950/30 text-red-500 hover:bg-red-100 transition-colors border border-red-200 dark:border-red-900/50 flex items-center gap-2"
+                    title="Clear all search matches"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                    Clear Matches
+                  </button>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
           {isPasswordRequired && (
             <div className="absolute inset-0 z-10 bg-black/50 backdrop-blur-sm flex items-center justify-center p-6">
               <div className="bg-white dark:bg-neutral-900 p-8 rounded-3xl shadow-2xl max-w-md w-full text-center">
@@ -1113,6 +1379,7 @@ function EditorView({ file, settings, onBack, addAlert, setFiles }: {
           )}
           <div 
             className="relative shadow-2xl cursor-crosshair"
+            style={{ backgroundColor: settings.customTheme?.canvasBgColor || '#f5f5f5' }}
             onMouseDown={handleMouseDown}
             onMouseMove={handleMouseMove}
             onMouseUp={handleMouseUp}
@@ -1199,8 +1466,10 @@ function EditorView({ file, settings, onBack, addAlert, setFiles }: {
                     strokeLinejoin="round"
                     vectorEffect="non-scaling-stroke"
                     className="pointer-events-auto cursor-pointer transition-all"
-                    onClick={(e) => {
+                    onMouseDown={(e) => {
                       e.stopPropagation();
+                      if (tool !== 'selection') return;
+                      
                       const updated = redactions.map(item => {
                         if (item.id === r.id) {
                           return { ...item, isSelected: !item.isSelected };
@@ -1245,21 +1514,75 @@ function EditorView({ file, settings, onBack, addAlert, setFiles }: {
                     borderWidth: settings.redactionStyle === 'outline' ? '3px' : '1px',
                     backgroundImage: settings.redactionStyle === 'pattern' && !r.isSelected ? `repeating-linear-gradient(45deg, transparent, transparent 5px, rgba(255,255,255,0.1) 5px, rgba(255,255,255,0.1) 10px)` : 'none'
                   }}
-                  onClick={(e) => {
+                  onMouseDown={(e) => {
                     e.stopPropagation();
-                    const updated = redactions.map(item => {
-                      if (item.id === r.id) {
-                        return { ...item, isSelected: !item.isSelected };
-                      }
-                      if (!e.shiftKey && item.id !== r.id) {
-                        return { ...item, isSelected: false };
-                      }
-                      return item;
+                    if (tool !== 'selection') return;
+                    
+                    const rect = e.currentTarget.parentElement?.getBoundingClientRect();
+                    if (!rect) return;
+                    const mx = ((e.clientX - rect.left) / rect.width) * 100;
+                    const my = ((e.clientY - rect.top) / rect.height) * 100;
+
+                    if (e.shiftKey) {
+                      const updated = redactions.map(item => 
+                        item.id === r.id ? { ...item, isSelected: !item.isSelected } : item
+                      );
+                      setRedactions(updated);
+                      addToHistory(updated);
+                      return;
+                    }
+
+                    if (!r.isSelected) {
+                      const updated = redactions.map(item => 
+                        item.id === r.id ? { ...item, isSelected: true } : { ...item, isSelected: false }
+                      );
+                      setRedactions(updated);
+                    }
+
+                    setActiveInteraction({
+                      type: 'drag',
+                      redactionId: r.id,
+                      initialMouse: { x: mx, y: my },
+                      initialRect: { x: r.x, y: r.y, width: r.width, height: r.height }
                     });
-                    setRedactions(updated);
-                    addToHistory(updated);
                   }}
                 >
+                  {r.isSelected && tool === 'selection' && (
+                    <>
+                      {/* Resize Handles */}
+                      {['nw', 'ne', 'sw', 'se', 'n', 's', 'e', 'w'].map(handle => (
+                        <div
+                          key={handle}
+                          className={cn(
+                            "absolute w-2 h-2 bg-white border border-red-500 z-20",
+                            handle === 'nw' && "-top-1 -left-1 cursor-nw-resize",
+                            handle === 'ne' && "-top-1 -right-1 cursor-ne-resize",
+                            handle === 'sw' && "-bottom-1 -left-1 cursor-sw-resize",
+                            handle === 'se' && "-bottom-1 -right-1 cursor-se-resize",
+                            handle === 'n' && "-top-1 left-1/2 -translate-x-1/2 cursor-n-resize",
+                            handle === 's' && "-bottom-1 left-1/2 -translate-x-1/2 cursor-s-resize",
+                            handle === 'e' && "top-1/2 -right-1 -translate-y-1/2 cursor-e-resize",
+                            handle === 'w' && "top-1/2 -left-1 -translate-y-1/2 cursor-w-resize",
+                          )}
+                          onMouseDown={(e) => {
+                            e.stopPropagation();
+                            const rect = e.currentTarget.parentElement?.parentElement?.getBoundingClientRect();
+                            if (!rect) return;
+                            const mx = ((e.clientX - rect.left) / rect.width) * 100;
+                            const my = ((e.clientY - rect.top) / rect.height) * 100;
+
+                            setActiveInteraction({
+                              type: 'resize',
+                              redactionId: r.id,
+                              handle,
+                              initialMouse: { x: mx, y: my },
+                              initialRect: { x: r.x, y: r.y, width: r.width, height: r.height }
+                            });
+                          }}
+                        />
+                      ))}
+                    </>
+                  )}
                   {r.label && (
                     <span className="absolute -top-6 left-0 bg-red-500 text-white text-[10px] px-1.5 py-0.5 rounded uppercase font-bold whitespace-nowrap">
                       {r.label}
@@ -1301,81 +1624,8 @@ function EditorView({ file, settings, onBack, addAlert, setFiles }: {
           </div>
         </div>
 
-        {/* Sidebar */}
-        <div className="w-80 bg-white dark:bg-neutral-900 rounded-3xl border border-neutral-200 dark:border-neutral-800 p-6 flex flex-col gap-6">
-          <div className="flex flex-col gap-4">
-            <div className="flex items-center justify-between">
-              <h3 className="font-bold text-lg">Search & Redact</h3>
-            </div>
-            <div className="flex gap-2 relative">
-              <div className="flex-1 relative">
-                <input 
-                  type="text"
-                  placeholder={useRegex ? "Regex search..." : "Search text..."}
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && handleSearchAndRedact()}
-                  className="w-full px-3 py-2 bg-neutral-100 dark:bg-neutral-800 rounded-xl text-sm outline-none focus:ring-2 focus:ring-black dark:focus:ring-white pr-8"
-                />
-                {searchQuery && (
-                  <button 
-                    onClick={() => setSearchQuery('')}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 p-1 hover:bg-neutral-200 dark:hover:bg-neutral-700 rounded-full transition-colors"
-                  >
-                    <X className="w-3 h-3 text-neutral-400" />
-                  </button>
-                )}
-              </div>
-              <button 
-                onClick={() => setUseRegex(!useRegex)}
-                className={cn(
-                  "px-2 py-1 rounded-lg text-[10px] font-bold transition-colors",
-                  useRegex ? "bg-black text-white dark:bg-white dark:text-black" : "bg-neutral-100 dark:bg-neutral-800 text-neutral-400"
-                )}
-                title="Use Regular Expression"
-              >
-                .*
-              </button>
-              <button 
-                onClick={handleSearchAndRedact}
-                disabled={isSearching || !searchQuery}
-                className="p-2 bg-black dark:bg-white text-white dark:text-black rounded-xl hover:opacity-90 transition-opacity disabled:opacity-50 relative overflow-hidden"
-              >
-                {isSearching ? (
-                  <>
-                    <RefreshCw className="w-4 h-4 animate-spin" />
-                    <div 
-                      className="absolute bottom-0 left-0 h-1 bg-emerald-500 transition-all duration-300" 
-                      style={{ width: `${searchProgress}%` }}
-                    />
-                  </>
-                ) : <Search className="w-4 h-4" />}
-              </button>
-            </div>
-            <div className="flex gap-2">
-              <button 
-                onClick={() => setIsCaseSensitive(!isCaseSensitive)}
-                className={cn(
-                  "flex-1 py-1 rounded-lg text-[10px] font-bold transition-colors border",
-                  isCaseSensitive ? "bg-neutral-100 dark:bg-neutral-800 border-black dark:border-white" : "bg-transparent border-neutral-200 dark:border-neutral-800 text-neutral-400"
-                )}
-              >
-                Case Sensitive
-              </button>
-              <button 
-                onClick={() => setIsFuzzyMatch(!isFuzzyMatch)}
-                className={cn(
-                  "flex-1 py-1 rounded-lg text-[10px] font-bold transition-colors border",
-                  isFuzzyMatch ? "bg-neutral-100 dark:bg-neutral-800 border-black dark:border-white" : "bg-transparent border-neutral-200 dark:border-neutral-800 text-neutral-400"
-                )}
-              >
-                Fuzzy Match
-              </button>
-            </div>
-          </div>
-
-          <div className="h-px bg-neutral-100 dark:bg-neutral-800" />
-
+        {/* Right Sidebar (Redaction List) */}
+        <div className="w-80 bg-white dark:bg-neutral-900 rounded-3xl border border-neutral-200 dark:border-neutral-800 p-6 flex flex-col gap-6 shadow-sm">
           <div className="flex flex-col gap-4">
             <div className="flex items-center justify-between">
               <h3 className="font-bold text-lg">Page OCR</h3>
@@ -1416,30 +1666,63 @@ function EditorView({ file, settings, onBack, addAlert, setFiles }: {
               )}
             </div>
             {ocrResults[pageNumber - 1] && (
-              <button 
-                onClick={() => {
-                  const results = ocrResults[pageNumber - 1];
-                  const newReds = results.map(res => ({
-                    id: Math.random().toString(36).substring(7),
-                    pageIndex: pageNumber - 1,
-                    x: res.x,
-                    y: res.y,
-                    width: res.width,
-                    height: res.height,
-                    text: res.text,
-                    label: 'OCR Detected',
-                    type: 'text' as const,
-                    isSelected: true,
-                  }));
-                  const updated = [...redactions, ...newReds];
-                  setRedactions(updated);
-                  addToHistory(updated);
-                  addAlert('success', `Redacted ${newReds.length} items from OCR.`);
-                }}
-                className="w-full py-2 bg-black dark:bg-white text-white dark:text-black rounded-xl text-xs font-bold hover:opacity-90 transition-opacity"
-              >
-                Redact All OCR Text
-              </button>
+              <div className="flex flex-col gap-2">
+                <button 
+                  onClick={() => {
+                    const results = ocrResults[pageNumber - 1];
+                    const newReds = results.map(res => ({
+                      id: Math.random().toString(36).substring(7),
+                      pageIndex: pageNumber - 1,
+                      x: res.x,
+                      y: res.y,
+                      width: res.width,
+                      height: res.height,
+                      text: res.text,
+                      label: 'OCR Detected',
+                      type: 'text' as const,
+                      isSelected: true,
+                    }));
+                    const updated = [...redactions, ...newReds];
+                    setRedactions(updated);
+                    addToHistory(updated);
+                    addAlert('success', `Redacted ${newReds.length} items from OCR.`);
+                  }}
+                  className="w-full py-2 bg-black dark:bg-white text-white dark:text-black rounded-xl text-xs font-bold hover:opacity-90 transition-opacity"
+                >
+                  Redact All OCR Text
+                </button>
+                <div className="max-h-60 overflow-y-auto space-y-2 pr-1 custom-scrollbar">
+                  {ocrResults[pageNumber - 1].map((res, i) => (
+                    <div key={i} className="group p-2 bg-neutral-50 dark:bg-neutral-800/50 rounded-lg border border-neutral-100 dark:border-neutral-800 flex items-center justify-between gap-2">
+                      <span className="text-[10px] font-medium truncate flex-1">{res.text}</span>
+                      <button 
+                        onClick={() => {
+                          const newRedaction: RedactionBox = {
+                            id: Math.random().toString(36).substring(7),
+                            pageIndex: pageNumber - 1,
+                            x: res.x,
+                            y: res.y,
+                            width: res.width,
+                            height: res.height,
+                            text: res.text,
+                            label: 'OCR',
+                            type: 'text',
+                            isSelected: true,
+                          };
+                          const updated = [...redactions, newRedaction];
+                          setRedactions(updated);
+                          addToHistory(updated);
+                          addAlert('success', `Redacted: ${res.text}`);
+                        }}
+                        className="p-1 bg-neutral-200 dark:bg-neutral-700 rounded hover:bg-black dark:hover:bg-white hover:text-white dark:hover:text-black transition-all opacity-0 group-hover:opacity-100"
+                        title="Redact this"
+                      >
+                        <Zap className="w-3 h-3" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
             )}
           </div>
 
@@ -1530,58 +1813,28 @@ function EditorView({ file, settings, onBack, addAlert, setFiles }: {
                           </button>
                         </div>
                       </div>
-                      
-                      {r.type !== 'highlight' && (
-                        <div className="grid grid-cols-2 gap-2 mb-2">
-                          <div className="flex flex-col gap-1">
-                            <label className="text-[8px] uppercase text-neutral-400">X (%)</label>
-                            <input 
-                              type="number"
-                              value={Math.round(r.x)}
-                              onChange={(e) => {
-                                const updated = redactions.map(item => 
-                                  item.id === r.id ? { ...item, x: parseFloat(e.target.value) } : item
-                                );
-                                setRedactions(updated);
-                                addToHistory(updated);
-                              }}
-                              className="text-[10px] bg-neutral-100 dark:bg-neutral-800 p-1 rounded outline-none"
-                            />
-                          </div>
-                          <div className="flex flex-col gap-1">
-                            <label className="text-[8px] uppercase text-neutral-400">Y (%)</label>
-                            <input 
-                              type="number"
-                              value={Math.round(r.y)}
-                              onChange={(e) => {
-                                const updated = redactions.map(item => 
-                                  item.id === r.id ? { ...item, y: parseFloat(e.target.value) } : item
-                                );
-                                setRedactions(updated);
-                                addToHistory(updated);
-                              }}
-                              className="text-[10px] bg-neutral-100 dark:bg-neutral-800 p-1 rounded outline-none"
-                            />
-                          </div>
-                        </div>
-                      )}
 
-                      <p className="text-[10px] font-medium truncate text-neutral-500 dark:text-neutral-400 mb-2">{r.text || 'Area selected'}</p>
-                      
                       <div className="flex flex-col gap-1">
-                        <label className="text-[8px] uppercase text-neutral-400">Private Comment</label>
-                        <textarea 
-                          value={r.comment || ''}
-                          placeholder="Add reasoning..."
-                          onChange={(e) => {
-                            const updated = redactions.map(item => 
-                              item.id === r.id ? { ...item, comment: e.target.value } : item
-                            );
-                            setRedactions(updated);
-                            addToHistory(updated);
-                          }}
-                          className="text-[10px] bg-neutral-100 dark:bg-neutral-800 p-2 rounded-lg outline-none resize-none h-12 w-full"
-                        />
+                        <div className="flex items-center justify-between">
+                          <label className="text-[8px] uppercase text-neutral-400">Private Comment / Reason</label>
+                          <button 
+                            onClick={() => {
+                              setCommentModal({
+                                isOpen: true,
+                                redactionId: r.id,
+                                comment: r.comment || ""
+                              });
+                            }}
+                            className="text-[8px] font-bold text-indigo-500 hover:underline"
+                          >
+                            Expand / Edit
+                          </button>
+                        </div>
+                        {r.comment && (
+                          <p className="text-[10px] text-neutral-500 bg-neutral-50 dark:bg-neutral-800/50 p-2 rounded-lg line-clamp-2">
+                            {r.comment}
+                          </p>
+                        )}
                       </div>
                     </div>
                   ))}
@@ -1628,6 +1881,243 @@ function EditorView({ file, settings, onBack, addAlert, setFiles }: {
           </div>
         </div>
       </div>
+
+      {/* Mobile Layout (Google Docs/Drive like) */}
+      <div className="md:hidden flex flex-col flex-1 overflow-hidden bg-neutral-100 dark:bg-neutral-950">
+        {/* Mobile Header */}
+        <div className="bg-white dark:bg-neutral-900 border-b border-neutral-200 dark:border-neutral-800 p-4 flex items-center justify-between">
+          <button onClick={onBack} className="p-2 hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded-lg">
+            <ChevronLeft className="w-6 h-6" />
+          </button>
+          <h2 className="font-bold truncate max-w-[200px]">{file.name}</h2>
+          <button 
+            onClick={() => setShowConfirmApply(true)}
+            disabled={isProcessing || redactions.length === 0}
+            className="p-2 text-indigo-500 disabled:opacity-50"
+          >
+            <CheckCircle2 className="w-6 h-6" />
+          </button>
+        </div>
+
+        {/* Mobile PDF Viewer - Continuous Scroll */}
+        <div className="flex-1 overflow-auto p-4 flex flex-col items-center gap-4 scroll-smooth">
+          <Document
+            file={file.url}
+            onLoadSuccess={onDocumentLoadSuccess}
+            onLoadError={onDocumentLoadError}
+            options={pdfOptions}
+            loading={<div className="p-8 text-center"><RefreshCw className="w-6 h-6 animate-spin mx-auto mb-2" /><p className="text-xs">Loading document...</p></div>}
+          >
+            {Array.from(new Array(numPages), (el, index) => (
+              <div 
+                key={`page_${index + 1}`} 
+                className="relative shadow-lg bg-white dark:bg-neutral-900 rounded-sm overflow-hidden mb-4"
+                style={{ width: 'fit-content' }}
+              >
+                <Page 
+                  pageNumber={index + 1} 
+                  width={window.innerWidth - 32} 
+                  scale={scale}
+                  renderAnnotationLayer={false}
+                  renderTextLayer={true}
+                />
+                
+                {/* Mobile Redaction Overlay for this page */}
+                <div className="absolute inset-0 pointer-events-none">
+                  {redactions.filter(r => r.pageIndex === index).map(redaction => (
+                    <div
+                      key={redaction.id}
+                      className={cn(
+                        "absolute border transition-all",
+                        redaction.type === 'highlight' ? "bg-yellow-400/30 border-yellow-400" : "bg-black border-black"
+                      )}
+                      style={{
+                        left: `${redaction.x}%`,
+                        top: `${redaction.y}%`,
+                        width: `${redaction.width}%`,
+                        height: `${redaction.height}%`,
+                        backgroundColor: redaction.type === 'highlight' ? 'rgba(250, 204, 21, 0.3)' : 'black'
+                      }}
+                    />
+                  ))}
+                  
+                  {isDrawing && currentBox && pageNumber === index + 1 && (
+                    <div 
+                      className="absolute border-2 border-dashed border-red-500 bg-red-500/10"
+                      style={{
+                        left: `${currentBox.x}%`,
+                        top: `${currentBox.y}%`,
+                        width: `${currentBox.width}%`,
+                        height: `${currentBox.height}%`,
+                      }}
+                    />
+                  )}
+                </div>
+              </div>
+            ))}
+          </Document>
+        </div>
+
+        {/* Mobile Floating Action Button for Tools */}
+        <div className="fixed bottom-6 right-6 z-50 flex flex-col gap-3 items-end">
+          <AnimatePresence>
+            {showMobileTools && (
+              <motion.div 
+                initial={{ opacity: 0, scale: 0.5, y: 20 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.5, y: 20 }}
+                className="flex flex-col gap-3 mb-3"
+              >
+                <button 
+                  onClick={() => { setTool('text'); setShowMobileTools(false); }}
+                  className={cn("w-12 h-12 rounded-full shadow-xl flex items-center justify-center transition-all", tool === 'text' ? "bg-black text-white" : "bg-white text-neutral-600")}
+                >
+                  <TypeIcon className="w-5 h-5" />
+                </button>
+                <button 
+                  onClick={() => { setTool('box'); setShowMobileTools(false); }}
+                  className={cn("w-12 h-12 rounded-full shadow-xl flex items-center justify-center transition-all", tool === 'box' ? "bg-black text-white" : "bg-white text-neutral-600")}
+                >
+                  <Square className="w-5 h-5" />
+                </button>
+                <button 
+                  onClick={() => { handleAutoDetect(); setShowMobileTools(false); }}
+                  className="w-12 h-12 bg-white text-neutral-600 rounded-full shadow-xl flex items-center justify-center"
+                >
+                  <Zap className="w-5 h-5" />
+                </button>
+                <button 
+                  onClick={() => { setShowSearchPopup(true); setShowMobileTools(false); }}
+                  className="w-12 h-12 bg-white text-neutral-600 rounded-full shadow-xl flex items-center justify-center"
+                >
+                  <Search className="w-5 h-5" />
+                </button>
+              </motion.div>
+            )}
+          </AnimatePresence>
+          <button 
+            onClick={() => setShowMobileTools(!showMobileTools)}
+            className="w-14 h-14 bg-indigo-600 text-white rounded-full shadow-2xl flex items-center justify-center hover:scale-110 transition-transform"
+          >
+            {showMobileTools ? <X className="w-6 h-6" /> : <Plus className="w-6 h-6" />}
+          </button>
+        </div>
+
+        {/* Mobile Zoom Controls */}
+        <div className="fixed bottom-6 left-6 z-50 flex items-center gap-2 bg-white/80 dark:bg-neutral-900/80 backdrop-blur-md p-2 rounded-2xl shadow-xl border border-neutral-200 dark:border-neutral-800">
+          <button onClick={handleZoomOut} className="p-2 hover:bg-neutral-100 rounded-lg"><Search className="w-4 h-4 -scale-x-100" /></button>
+          <span className="text-[10px] font-bold min-w-[30px] text-center">{Math.round(scale * 100)}%</span>
+          <button onClick={handleZoomIn} className="p-2 hover:bg-neutral-100 rounded-lg"><Plus className="w-4 h-4" /></button>
+        </div>
+      </div>
+
+      {/* Confirmation Modal */}
+      <AnimatePresence>
+        {showConfirmApply && (
+          <div className="fixed inset-0 z-[120] flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setShowConfirmApply(false)}
+              className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+            />
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.9, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.9, y: 20 }}
+              className="relative w-full max-w-md bg-white dark:bg-neutral-900 rounded-3xl shadow-2xl overflow-hidden border border-neutral-200 dark:border-neutral-800 p-8 text-center"
+            >
+              <div className="w-16 h-16 bg-amber-100 dark:bg-amber-950/30 text-amber-500 rounded-full flex items-center justify-center mx-auto mb-6">
+                <AlertCircle className="w-8 h-8" />
+              </div>
+              <h3 className="text-2xl font-bold mb-2">Apply Redactions?</h3>
+              <p className="text-neutral-500 dark:text-neutral-400 mb-8">
+                You are about to permanently redact {redactions.length} areas in this document. This action cannot be undone after the file is saved.
+              </p>
+              <div className="flex gap-3">
+                <button 
+                  onClick={() => setShowConfirmApply(false)}
+                  className="flex-1 py-3 bg-neutral-100 dark:bg-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-700 rounded-xl font-bold transition-colors"
+                >
+                  Cancel
+                </button>
+                <button 
+                  onClick={() => {
+                    setShowConfirmApply(false);
+                    applyRedactions();
+                  }}
+                  className="flex-1 py-3 bg-black dark:bg-white text-white dark:text-black rounded-xl font-bold hover:opacity-90 transition-opacity"
+                >
+                  Yes, Apply
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Comment Modal */}
+      <AnimatePresence>
+        {commentModal.isOpen && (
+          <div className="fixed inset-0 z-[110] flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setCommentModal(prev => ({ ...prev, isOpen: false }))}
+              className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+            />
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.9, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.9, y: 20 }}
+              className="relative w-full max-w-lg bg-white dark:bg-neutral-900 rounded-3xl shadow-2xl overflow-hidden border border-neutral-200 dark:border-neutral-800"
+            >
+              <div className="p-6 border-b border-neutral-100 dark:border-neutral-800 flex items-center justify-between">
+                <h3 className="font-bold text-lg">Redaction Reasoning</h3>
+                <button 
+                  onClick={() => setCommentModal(prev => ({ ...prev, isOpen: false }))}
+                  className="p-2 hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded-xl transition-colors"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              <div className="p-6">
+                <textarea 
+                  autoFocus
+                  value={commentModal.comment}
+                  onChange={(e) => setCommentModal(prev => ({ ...prev, comment: e.target.value }))}
+                  placeholder="Enter detailed reasoning for this redaction..."
+                  className="w-full h-48 p-4 bg-neutral-50 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-2xl text-sm outline-none focus:ring-2 focus:ring-indigo-500 transition-all resize-none"
+                />
+              </div>
+              <div className="p-6 bg-neutral-50 dark:bg-neutral-800/50 flex justify-end gap-3">
+                <button 
+                  onClick={() => setCommentModal(prev => ({ ...prev, isOpen: false }))}
+                  className="px-4 py-2 text-sm font-medium hover:text-indigo-500 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button 
+                  onClick={() => {
+                    const updated = redactions.map(r => 
+                      r.id === commentModal.redactionId ? { ...r, comment: commentModal.comment } : r
+                    );
+                    setRedactions(updated);
+                    addToHistory(updated);
+                    addAlert('success', 'Comment updated');
+                    setCommentModal(prev => ({ ...prev, isOpen: false }));
+                  }}
+                  className="px-6 py-2 bg-black dark:bg-white text-white dark:text-black rounded-xl text-sm font-bold hover:opacity-90 transition-opacity"
+                >
+                  Save Comment
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
@@ -1641,19 +2131,23 @@ function BatchView({ files, setFiles, settings, setSettings, addAlert }: {
 }) {
   const [isProcessing, setIsProcessing] = useState(false);
   const [batchRules, setBatchRules] = useState({
-    pii: true,
-    barcodes: false,
-    companyDetection: false,
+    pii: settings.aiDefaults?.piiEnabled ?? true,
+    barcodes: settings.aiDefaults?.barcodesEnabled ?? false,
+    companyDetection: settings.aiDefaults?.companyDataEnabled ?? false,
     sensitiveTerms: '',
   });
   const [ruleName, setRuleName] = useState('');
+  const [presetSearch, setPresetSearch] = useState('');
+  const [editingPresetId, setEditingPresetId] = useState<string | null>(null);
+
+  const filteredPresets = settings.savedBatchRules.filter(r => 
+    r.name.toLowerCase().includes(presetSearch.toLowerCase())
+  );
 
   const processBatch = async () => {
     setIsProcessing(true);
-    addAlert('info', `Processing ${files.length} files with selected rules...`);
+    addAlert('info', `Processing ${files.length} files with local AI...`);
     
-    const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-
     try {
       const updatedFiles = [...files];
       
@@ -1676,36 +2170,83 @@ function BatchView({ files, setFiles, settings, setSettings, addAlert }: {
           canvas.width = viewport.width;
           
           await page.render({ canvasContext: context!, viewport, canvas }).promise;
-          const imageData = canvas.toDataURL('image/png').split(',')[1];
+          const imageData = canvas.toDataURL('image/png');
 
-          let prompt = "Analyze this document page for sensitive information. ";
-          if (batchRules.pii) prompt += "Identify PII (Names, Emails, Phone Numbers, SSNs). ";
-          if (batchRules.barcodes) prompt += "Identify Barcodes and QR codes. ";
-          if (batchRules.companyDetection) prompt += "Identify the company this document belongs to and find company-specific sensitive data like internal IDs or proprietary project names. ";
-          if (batchRules.sensitiveTerms) prompt += `Also look for these specific terms: ${batchRules.sensitiveTerms}. `;
-          
-          prompt += "Return a JSON array of bounding boxes as percentages (x, y, width, height) and a label for each. Format: [{\"x\": 10, \"y\": 20, \"width\": 5, \"height\": 2, \"label\": \"NAME\"}]. Only return the JSON array.";
+          // Local OCR
+          const ocrData = await performLocalOCR(imageData) as any;
+          const text = ocrData.text;
+          const words = ocrData.words;
 
-          const response = await ai.models.generateContent({
-            model: "gemini-3-flash-preview",
-            contents: [{ parts: [{ inlineData: { data: imageData, mimeType: "image/png" } }, { text: prompt }] }],
-            config: { responseMimeType: "application/json" }
-          });
+          // Company Detection (Local)
+          let matchedRule: CompanyRule | null = null;
+          if (batchRules.companyDetection && settings.companyRules?.length > 0) {
+            for (const rule of settings.companyRules) {
+              const identifiers = rule.identifiers || [];
+              if (identifiers.some(id => text.toLowerCase().includes(id.toLowerCase()))) {
+                matchedRule = rule;
+                break;
+              }
+            }
+          }
 
-          const results = JSON.parse(response.text || "[]");
-          results.forEach((res: any) => {
-            allRedactions.push({
-              id: Math.random().toString(36).substring(7),
-              pageIndex: pageNum - 1,
-              x: res.x,
-              y: res.y,
-              width: res.width,
-              height: res.height,
-              label: res.label,
-              type: 'auto',
-              isSelected: true
+          // Apply Learned Coordinates
+          if (matchedRule?.learnedCoordinates) {
+            matchedRule.learnedCoordinates
+              .filter(c => c.pageIndex === pageNum - 1)
+              .forEach((coord, idx) => {
+                allRedactions.push({
+                  id: `learned-${Date.now()}-${idx}`,
+                  pageIndex: pageNum - 1,
+                  x: coord.x,
+                  y: coord.y,
+                  width: coord.width,
+                  height: coord.height,
+                  label: coord.label || 'Learned Area',
+                  type: 'auto',
+                  isSelected: true
+                });
+              });
+          }
+
+          // Local PII
+          if (batchRules.pii) {
+            const piiResults = detectPIILocal(text, words);
+            piiResults.forEach((res, idx) => {
+              allRedactions.push({
+                id: `pii-${Date.now()}-${idx}`,
+                pageIndex: pageNum - 1,
+                x: (res.x / canvas.width) * 100,
+                y: (res.y / canvas.height) * 100,
+                width: (res.width / canvas.width) * 100,
+                height: (res.height / canvas.height) * 100,
+                label: res.label,
+                type: 'auto',
+                isSelected: true
+              });
             });
-          });
+          }
+
+          // Local Sensitive Terms
+          const termsToSearch = [
+            ...(batchRules.sensitiveTerms.split(',').map(t => t.trim())),
+            ...(matchedRule?.sensitiveTerms || [])
+          ];
+          if (termsToSearch.length > 0) {
+            const termResults = detectSensitiveTermsLocal(text, words, termsToSearch);
+            termResults.forEach((res, idx) => {
+              allRedactions.push({
+                id: `term-${Date.now()}-${idx}`,
+                pageIndex: pageNum - 1,
+                x: (res.x / canvas.width) * 100,
+                y: (res.y / canvas.height) * 100,
+                width: (res.width / canvas.width) * 100,
+                height: (res.height / canvas.height) * 100,
+                label: 'SENSITIVE TERM',
+                type: 'auto',
+                isSelected: true
+              });
+            });
+          }
         }
 
         updatedFiles[i] = { ...file, redactions: allRedactions, status: 'ready' };
@@ -1820,7 +2361,9 @@ function BatchView({ files, setFiles, settings, setSettings, addAlert }: {
               </div>
 
               <div className="pt-4 border-t border-neutral-100 dark:border-neutral-800">
-                <label className="block text-xs font-bold text-neutral-400 uppercase tracking-wider mb-2">Save as Preset</label>
+                <label className="block text-xs font-bold text-neutral-400 uppercase tracking-wider mb-2">
+                  {editingPresetId ? 'Update Preset' : 'Save as Preset'}
+                </label>
                 <div className="flex gap-2">
                   <input 
                     type="text"
@@ -1830,11 +2373,34 @@ function BatchView({ files, setFiles, settings, setSettings, addAlert }: {
                     className="flex-1 px-3 py-2 bg-neutral-50 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-xl text-xs outline-none focus:ring-2 focus:ring-black dark:focus:ring-white"
                   />
                   <button 
-                    onClick={saveRuleSet}
+                    onClick={() => {
+                      if (editingPresetId) {
+                        const updated = settings.savedBatchRules.map(r => 
+                          r.id === editingPresetId ? { ...r, name: ruleName, ...batchRules } : r
+                        );
+                        setSettings(prev => ({ ...prev, savedBatchRules: updated }));
+                        setEditingPresetId(null);
+                        setRuleName('');
+                        addAlert('success', `Preset "${ruleName}" updated.`);
+                      } else {
+                        saveRuleSet();
+                      }
+                    }}
                     className="p-2 bg-neutral-100 dark:bg-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-700 rounded-xl transition-colors"
                   >
                     <Save className="w-4 h-4" />
                   </button>
+                  {editingPresetId && (
+                    <button 
+                      onClick={() => {
+                        setEditingPresetId(null);
+                        setRuleName('');
+                      }}
+                      className="p-2 bg-neutral-100 dark:bg-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-700 rounded-xl transition-colors text-red-500"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  )}
                 </div>
               </div>
             </div>
@@ -1842,25 +2408,70 @@ function BatchView({ files, setFiles, settings, setSettings, addAlert }: {
 
           {settings.savedBatchRules.length > 0 && (
             <section className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-3xl p-6">
-              <h3 className="font-bold mb-4 flex items-center gap-2 text-sm uppercase tracking-wider text-neutral-400">
-                <Bookmark className="w-4 h-4" />
-                Saved Presets
-              </h3>
-              <div className="space-y-2">
-                {settings.savedBatchRules.map(rule => (
-                  <div key={rule.id} className="group flex items-center justify-between p-2 hover:bg-neutral-50 dark:hover:bg-neutral-800 rounded-xl transition-colors cursor-pointer" onClick={() => loadRuleSet(rule)}>
-                    <span className="text-xs font-medium">{rule.name}</span>
-                    <button 
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        deleteRuleSet(rule.id);
-                      }}
-                      className="opacity-0 group-hover:opacity-100 p-1 hover:bg-red-50 dark:hover:bg-red-950/30 text-neutral-400 hover:text-red-500 rounded transition-all"
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="font-bold flex items-center gap-2 text-sm uppercase tracking-wider text-neutral-400">
+                  <Bookmark className="w-4 h-4" />
+                  Saved Presets
+                </h3>
+              </div>
+              
+              <div className="mb-4 relative">
+                <input 
+                  type="text"
+                  placeholder="Filter presets..."
+                  value={presetSearch}
+                  onChange={(e) => setPresetSearch(e.target.value)}
+                  className="w-full px-3 py-2 bg-neutral-50 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-xl text-xs outline-none focus:ring-2 focus:ring-black dark:focus:ring-white pr-8"
+                />
+                <Search className="absolute right-2 top-1/2 -translate-y-1/2 w-3 h-3 text-neutral-400" />
+              </div>
+
+              <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
+                {filteredPresets.length === 0 ? (
+                  <p className="text-center py-4 text-xs text-neutral-400">No presets match your search.</p>
+                ) : (
+                  filteredPresets.map(rule => (
+                    <div 
+                      key={rule.id} 
+                      className={cn(
+                        "group flex items-center justify-between p-2 hover:bg-neutral-50 dark:hover:bg-neutral-800 rounded-xl transition-colors cursor-pointer border border-transparent",
+                        editingPresetId === rule.id ? "border-indigo-500 bg-indigo-50/10" : ""
+                      )} 
+                      onClick={() => loadRuleSet(rule)}
                     >
-                      <Trash2 className="w-3 h-3" />
-                    </button>
-                  </div>
-                ))}
+                      <span className="text-xs font-medium">{rule.name}</span>
+                      <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button 
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setEditingPresetId(rule.id);
+                            setRuleName(rule.name);
+                            setBatchRules({
+                              pii: rule.pii,
+                              barcodes: rule.barcodes,
+                              companyDetection: rule.companyDetection || false,
+                              sensitiveTerms: rule.sensitiveTerms
+                            });
+                          }}
+                          className="p-1 hover:bg-neutral-200 dark:hover:bg-neutral-700 text-neutral-400 hover:text-indigo-500 rounded transition-all"
+                          title="Edit Preset"
+                        >
+                          <Settings className="w-3 h-3" />
+                        </button>
+                        <button 
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            deleteRuleSet(rule.id);
+                          }}
+                          className="p-1 hover:bg-red-50 dark:hover:bg-red-950/30 text-neutral-400 hover:text-red-500 rounded transition-all"
+                          title="Delete Preset"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </button>
+                      </div>
+                    </div>
+                  ))
+                )}
               </div>
             </section>
           )}
@@ -2066,6 +2677,544 @@ function SettingsView({ settings, setSettings, onBack, activeFile, setFiles }: {
             </div>
           </section>
         )}
+
+        {/* Theme Customization */}
+        <section className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-3xl p-8">
+          <div className="flex items-center gap-3 mb-6">
+            <Palette className="w-5 h-5 text-neutral-400" />
+            <h3 className="font-bold text-xl">Theme Customization</h3>
+          </div>
+          
+          <div className="space-y-6">
+            <div>
+              <label className="block text-sm font-medium text-neutral-500 mb-4">Theme Mode</label>
+              <div className="grid grid-cols-4 gap-4">
+                {(['light', 'dark', 'system', 'custom'] as const).map(mode => (
+                  <button
+                    key={mode}
+                    onClick={() => setSettings(prev => ({ ...prev, theme: mode }))}
+                    className={cn(
+                      "py-3 rounded-xl border-2 transition-all capitalize font-medium",
+                      settings.theme === mode 
+                        ? "border-black dark:border-white bg-black text-white dark:bg-white dark:text-black" 
+                        : "border-neutral-100 dark:border-neutral-800 hover:border-neutral-200 dark:hover:border-neutral-700"
+                    )}
+                  >
+                    {mode}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {settings.theme === 'custom' && settings.customTheme && (
+              <div className="space-y-6 pt-6 border-t border-neutral-100 dark:border-neutral-800">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                  <div>
+                    <label className="block text-sm font-medium text-neutral-500 mb-2">Primary Color</label>
+                    <div className="flex gap-2">
+                      <input 
+                        type="color" 
+                        value={settings.customTheme.primaryColor}
+                        onChange={(e) => setSettings(prev => ({ 
+                          ...prev, 
+                          customTheme: { ...prev.customTheme!, primaryColor: e.target.value } 
+                        }))}
+                        className="w-10 h-10 rounded-lg cursor-pointer overflow-hidden border-none"
+                      />
+                      <input 
+                        type="text" 
+                        value={settings.customTheme.primaryColor}
+                        onChange={(e) => setSettings(prev => ({ 
+                          ...prev, 
+                          customTheme: { ...prev.customTheme!, primaryColor: e.target.value } 
+                        }))}
+                        className="flex-1 px-3 py-2 bg-neutral-50 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-lg text-sm"
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-neutral-500 mb-2">Secondary Color</label>
+                    <div className="flex gap-2">
+                      <input 
+                        type="color" 
+                        value={settings.customTheme.secondaryColor}
+                        onChange={(e) => setSettings(prev => ({ 
+                          ...prev, 
+                          customTheme: { ...prev.customTheme!, secondaryColor: e.target.value } 
+                        }))}
+                        className="w-10 h-10 rounded-lg cursor-pointer overflow-hidden border-none"
+                      />
+                      <input 
+                        type="text" 
+                        value={settings.customTheme.secondaryColor}
+                        onChange={(e) => setSettings(prev => ({ 
+                          ...prev, 
+                          customTheme: { ...prev.customTheme!, secondaryColor: e.target.value } 
+                        }))}
+                        className="flex-1 px-3 py-2 bg-neutral-50 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-lg text-sm"
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-neutral-500 mb-2">Accent Color</label>
+                    <div className="flex gap-2">
+                      <input 
+                        type="color" 
+                        value={settings.customTheme.accentColor}
+                        onChange={(e) => setSettings(prev => ({ 
+                          ...prev, 
+                          customTheme: { ...prev.customTheme!, accentColor: e.target.value } 
+                        }))}
+                        className="w-10 h-10 rounded-lg cursor-pointer overflow-hidden border-none"
+                      />
+                      <input 
+                        type="text" 
+                        value={settings.customTheme.accentColor}
+                        onChange={(e) => setSettings(prev => ({ 
+                          ...prev, 
+                          customTheme: { ...prev.customTheme!, accentColor: e.target.value } 
+                        }))}
+                        className="flex-1 px-3 py-2 bg-neutral-50 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-lg text-sm"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div>
+                    <label className="block text-sm font-medium text-neutral-500 mb-2">Canvas Background Color</label>
+                    <div className="flex gap-2">
+                      <input 
+                        type="color" 
+                        value={settings.customTheme.canvasBgColor}
+                        onChange={(e) => setSettings(prev => ({ 
+                          ...prev, 
+                          customTheme: { ...prev.customTheme!, canvasBgColor: e.target.value } 
+                        }))}
+                        className="w-10 h-10 rounded-lg cursor-pointer overflow-hidden border-none"
+                      />
+                      <input 
+                        type="text" 
+                        value={settings.customTheme.canvasBgColor}
+                        onChange={(e) => setSettings(prev => ({ 
+                          ...prev, 
+                          customTheme: { ...prev.customTheme!, canvasBgColor: e.target.value } 
+                        }))}
+                        className="flex-1 px-3 py-2 bg-neutral-50 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-lg text-sm"
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-neutral-500 mb-2">Custom Font</label>
+                    <div className="flex gap-2">
+                      <input 
+                        type="text" 
+                        placeholder="e.g. 'Open Sans', sans-serif"
+                        value={settings.customTheme.fontFamily || ''}
+                        onChange={(e) => setSettings(prev => ({ 
+                          ...prev, 
+                          customTheme: { ...prev.customTheme!, fontFamily: e.target.value } 
+                        }))}
+                        className="flex-1 px-3 py-2 bg-neutral-50 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-lg text-sm"
+                      />
+                      <label className="px-4 py-2 bg-neutral-100 dark:bg-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-700 rounded-lg text-xs font-bold cursor-pointer flex items-center justify-center transition-colors">
+                        Upload Font
+                        <input 
+                          type="file" 
+                          accept=".ttf,.woff,.woff2"
+                          className="hidden"
+                          onChange={(e) => {
+                            const file = e.target.files?.[0];
+                            if (file) {
+                              const reader = new FileReader();
+                              reader.onload = (event) => {
+                                const fontData = event.target?.result as string;
+                                const fontName = file.name.split('.')[0];
+                                const newStyle = document.createElement('style');
+                                newStyle.appendChild(document.createTextNode(`
+                                  @font-face {
+                                    font-family: '${fontName}';
+                                    src: url('${fontData}');
+                                  }
+                                `));
+                                document.head.appendChild(newStyle);
+                                setSettings(prev => ({ 
+                                  ...prev, 
+                                  customTheme: { ...prev.customTheme!, fontFamily: `'${fontName}', sans-serif` } 
+                                }));
+                                addAlert('success', `Font "${fontName}" uploaded and applied.`);
+                              };
+                              reader.readAsDataURL(file);
+                            }
+                          }}
+                        />
+                      </label>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </section>
+
+        {/* AI Detection Section */}
+        <section className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-3xl p-8">
+          <div className="flex items-center gap-3 mb-6">
+            <RefreshCw className="w-5 h-5 text-neutral-400" />
+            <h3 className="font-bold text-xl">AI Detection Defaults</h3>
+          </div>
+          
+          <div className="space-y-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="font-medium">PII Detection</p>
+                <p className="text-xs text-neutral-500">Enable PII scanning by default</p>
+              </div>
+              <button 
+                onClick={() => setSettings(prev => ({ ...prev, aiDefaults: { ...prev.aiDefaults, piiEnabled: !prev.aiDefaults.piiEnabled } }))}
+                className={cn(
+                  "w-12 h-6 rounded-full transition-all relative",
+                  settings.aiDefaults?.piiEnabled ? "bg-black dark:bg-white" : "bg-neutral-200 dark:bg-neutral-800"
+                )}
+              >
+                <div className={cn(
+                  "absolute top-1 w-4 h-4 rounded-full transition-all",
+                  settings.aiDefaults?.piiEnabled ? "right-1 bg-white dark:bg-black" : "left-1 bg-neutral-400"
+                )} />
+              </button>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="font-medium">Barcode & QR Detection</p>
+                <p className="text-xs text-neutral-500">Enable code scanning by default</p>
+              </div>
+              <button 
+                onClick={() => setSettings(prev => ({ ...prev, aiDefaults: { ...prev.aiDefaults, barcodesEnabled: !prev.aiDefaults.barcodesEnabled } }))}
+                className={cn(
+                  "w-12 h-6 rounded-full transition-all relative",
+                  settings.aiDefaults?.barcodesEnabled ? "bg-black dark:bg-white" : "bg-neutral-200 dark:bg-neutral-800"
+                )}
+              >
+                <div className={cn(
+                  "absolute top-1 w-4 h-4 rounded-full transition-all",
+                  settings.aiDefaults?.barcodesEnabled ? "right-1 bg-white dark:bg-black" : "left-1 bg-neutral-400"
+                )} />
+              </button>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="font-medium">Company-Specific Data</p>
+                <p className="text-xs text-neutral-500">Enable company rule scanning by default</p>
+              </div>
+              <button 
+                onClick={() => setSettings(prev => ({ ...prev, aiDefaults: { ...prev.aiDefaults, companyDataEnabled: !prev.aiDefaults.companyDataEnabled } }))}
+                className={cn(
+                  "w-12 h-6 rounded-full transition-all relative",
+                  settings.aiDefaults?.companyDataEnabled ? "bg-black dark:bg-white" : "bg-neutral-200 dark:bg-neutral-800"
+                )}
+              >
+                <div className={cn(
+                  "absolute top-1 w-4 h-4 rounded-full transition-all",
+                  settings.aiDefaults?.companyDataEnabled ? "right-1 bg-white dark:bg-black" : "left-1 bg-neutral-400"
+                )} />
+              </button>
+            </div>
+
+            <div className="pt-4 border-t border-neutral-100 dark:border-neutral-800 space-y-4">
+              <div className="flex items-center justify-between mb-2">
+                <label className="text-sm font-medium text-neutral-500">Detection Sensitivity</label>
+                <span className="text-xs font-bold px-2 py-0.5 bg-neutral-100 dark:bg-neutral-800 rounded-lg">
+                  {Math.round((settings.aiDefaults?.sensitivity || 0.5) * 100)}%
+                </span>
+              </div>
+              <input 
+                type="range"
+                min="0"
+                max="1"
+                step="0.05"
+                value={settings.aiDefaults?.sensitivity || 0.5}
+                onChange={(e) => setSettings(prev => ({ ...prev, aiDefaults: { ...prev.aiDefaults, sensitivity: parseFloat(e.target.value) } }))}
+                className="w-full h-2 bg-neutral-100 dark:bg-neutral-800 rounded-lg appearance-none cursor-pointer accent-black dark:accent-white"
+              />
+              <div className="flex justify-between text-[10px] text-neutral-400 font-bold uppercase tracking-widest">
+                <span>Strict</span>
+                <span>Balanced</span>
+                <span>Aggressive</span>
+              </div>
+            </div>
+
+            <div className="pt-4 border-t border-neutral-100 dark:border-neutral-800 space-y-4">
+              <div className="flex items-center justify-between mb-2">
+                <label className="text-sm font-medium text-neutral-500">Detection Sensitivity</label>
+                <span className="text-xs font-bold px-2 py-0.5 bg-neutral-100 dark:bg-neutral-800 rounded-lg">
+                  {Math.round((settings.aiDefaults?.sensitivity || 0.5) * 100)}%
+                </span>
+              </div>
+              <input 
+                type="range"
+                min="0"
+                max="1"
+                step="0.05"
+                value={settings.aiDefaults?.sensitivity || 0.5}
+                onChange={(e) => setSettings(prev => ({ ...prev, aiDefaults: { ...prev.aiDefaults, sensitivity: parseFloat(e.target.value) } }))}
+                className="w-full h-2 bg-neutral-100 dark:bg-neutral-800 rounded-lg appearance-none cursor-pointer accent-black dark:accent-white"
+              />
+              <div className="flex justify-between text-[10px] text-neutral-400 font-bold uppercase tracking-widest">
+                <span>Strict</span>
+                <span>Balanced</span>
+                <span>Aggressive</span>
+              </div>
+            </div>
+
+            <div className="pt-4 border-t border-neutral-100 dark:border-neutral-800 space-y-4">
+              <label className="block text-sm font-medium text-neutral-500 mb-2">Company Profile</label>
+              
+              <div>
+                <label className="block text-xs font-bold text-neutral-400 uppercase tracking-widest mb-1">Company Name</label>
+                <input 
+                  type="text"
+                  value={settings.companyProfile?.name || ''}
+                  onChange={(e) => setSettings(prev => ({
+                    ...prev,
+                    companyProfile: { ...(prev.companyProfile || { name: '', content: '' }), name: e.target.value }
+                  }))}
+                  placeholder="Enter company name"
+                  className="w-full px-4 py-2 bg-neutral-50 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-xl outline-none focus:ring-2 focus:ring-black dark:focus:ring-white transition-all text-sm"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-neutral-400 uppercase tracking-widest mb-1">Contact Details</label>
+                <textarea 
+                  value={settings.companyProfile?.contactDetails || ''}
+                  onChange={(e) => setSettings(prev => ({
+                    ...prev,
+                    companyProfile: { ...(prev.companyProfile || { name: '', content: '' }), contactDetails: e.target.value }
+                  }))}
+                  placeholder="Enter contact details (email, phone, address, etc.)"
+                  className="w-full px-4 py-2 bg-neutral-50 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-xl outline-none focus:ring-2 focus:ring-black dark:focus:ring-white transition-all text-sm h-20 resize-none"
+                />
+              </div>
+
+              <div className="flex items-center gap-4">
+                <label className="flex-1 flex items-center justify-center gap-2 p-4 border-2 border-dashed border-neutral-200 dark:border-neutral-800 rounded-2xl hover:border-black dark:hover:border-white transition-all cursor-pointer">
+                  <Upload className="w-5 h-5 text-neutral-400" />
+                  <span className="text-sm text-neutral-600 dark:text-neutral-400">
+                    {settings.companyProfile?.content ? 'Profile uploaded' : 'Upload Profile (PDF/DOCX)'}
+                  </span>
+                  <input 
+                    type="file" 
+                    className="hidden" 
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (file) {
+                        setSettings(prev => ({ 
+                          ...prev, 
+                          companyProfile: { 
+                            ...(prev.companyProfile || { name: '', content: '' }), 
+                            name: prev.companyProfile?.name || file.name, 
+                            content: 'Profile uploaded' 
+                          } 
+                        }));
+                      }
+                    }}
+                  />
+                </label>
+                {settings.companyProfile?.content && (
+                  <button 
+                    onClick={() => setSettings(prev => ({ 
+                      ...prev, 
+                      companyProfile: { ...(prev.companyProfile || { name: '', content: '' }), content: '' } 
+                    }))}
+                    className="p-2 text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 rounded-xl transition-colors"
+                  >
+                    <Trash2 className="w-5 h-5" />
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* Company Rules Section */}
+        <section className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-3xl p-8">
+          <div className="flex items-center justify-between mb-6">
+            <div className="flex items-center gap-3">
+              <Bookmark className="w-5 h-5 text-neutral-400" />
+              <h3 className="font-bold text-xl">Company Rules</h3>
+            </div>
+            <button 
+              onClick={() => {
+                const newRule: CompanyRule = {
+                  id: Math.random().toString(36).substring(7),
+                  name: 'New Rule Template',
+                  patterns: [],
+                  sensitiveTerms: []
+                };
+                setSettings(prev => ({ ...prev, companyRules: [...(prev.companyRules || []), newRule] }));
+              }}
+              className="px-4 py-2 bg-black dark:bg-white text-white dark:text-black rounded-xl text-sm font-bold hover:opacity-90 transition-opacity flex items-center gap-2"
+            >
+              <Plus className="w-4 h-4" />
+              Add Template
+            </button>
+          </div>
+
+          <div className="space-y-4">
+            {(settings.companyRules || []).length === 0 ? (
+              <div className="text-center py-12 border-2 border-dashed border-neutral-100 dark:border-neutral-800 rounded-2xl">
+                <p className="text-neutral-400 text-sm">No company rules defined yet.</p>
+              </div>
+            ) : (
+              settings.companyRules.map(rule => (
+                <div key={rule.id} className="p-6 border border-neutral-200 dark:border-neutral-800 rounded-2xl space-y-4">
+                  <div className="flex items-center justify-between">
+                    <div className="flex flex-col gap-1">
+                      <input 
+                        type="text"
+                        value={rule.name}
+                        onChange={(e) => {
+                          const updated = settings.companyRules.map(r => r.id === rule.id ? { ...r, name: e.target.value } : r);
+                          setSettings(prev => ({ ...prev, companyRules: updated }));
+                        }}
+                        className="font-bold bg-transparent outline-none focus:ring-2 focus:ring-black dark:focus:ring-white rounded px-2 text-lg"
+                      />
+                      {rule.description && <p className="text-[10px] text-neutral-400 px-2">{rule.description}</p>}
+                    </div>
+                    <button 
+                      onClick={() => setSettings(prev => ({ ...prev, companyRules: prev.companyRules.filter(r => r.id !== rule.id) }))}
+                      className="p-2 text-neutral-400 hover:text-red-500 transition-colors"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-bold text-neutral-400 uppercase tracking-widest">Company Identifiers</label>
+                    <input 
+                      type="text"
+                      placeholder="Add identifier (Enter)..."
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          const val = e.currentTarget.value.trim();
+                          if (val) {
+                            const updated = settings.companyRules.map(r => r.id === rule.id ? { ...r, identifiers: [...(r.identifiers || []), val] } : r);
+                            setSettings(prev => ({ ...prev, companyRules: updated }));
+                            e.currentTarget.value = '';
+                          }
+                        }
+                      }}
+                      className="w-full px-3 py-2 bg-neutral-50 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-xl text-xs outline-none focus:ring-2 focus:ring-black dark:focus:ring-white"
+                    />
+                    <div className="flex flex-wrap gap-2">
+                      {(rule.identifiers || []).map((id, i) => (
+                        <span key={i} className="px-2 py-1 bg-neutral-100 dark:bg-neutral-800 rounded text-[10px] font-medium border border-neutral-200 dark:border-neutral-700 flex items-center gap-1">
+                          {id}
+                          <button onClick={() => {
+                            const updated = settings.companyRules.map(r => r.id === rule.id ? { ...r, identifiers: (r.identifiers || []).filter((_, idx) => idx !== i) } : r);
+                            setSettings(prev => ({ ...prev, companyRules: updated }));
+                          }}><X className="w-3 h-3" /></button>
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-bold text-neutral-400 uppercase tracking-widest">Sensitive Terms</label>
+                    <input 
+                      type="text"
+                      placeholder="Add term (Enter)..."
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          const val = e.currentTarget.value.trim();
+                          if (val) {
+                            const updated = settings.companyRules.map(r => r.id === rule.id ? { ...r, sensitiveTerms: [...(r.sensitiveTerms || []), val] } : r);
+                            setSettings(prev => ({ ...prev, companyRules: updated }));
+                            e.currentTarget.value = '';
+                          }
+                        }
+                      }}
+                      className="w-full px-3 py-2 bg-neutral-50 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-xl text-xs outline-none focus:ring-2 focus:ring-black dark:focus:ring-white"
+                    />
+                    <div className="flex flex-wrap gap-2">
+                      {(rule.sensitiveTerms || []).map((term, i) => (
+                        <span key={i} className="px-2 py-1 bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 rounded text-[10px] font-medium border border-indigo-100 dark:border-indigo-900/50 flex items-center gap-1">
+                          {term}
+                          <button onClick={() => {
+                            const updated = settings.companyRules.map(r => r.id === rule.id ? { ...r, sensitiveTerms: (r.sensitiveTerms || []).filter((_, idx) => idx !== i) } : r);
+                            setSettings(prev => ({ ...prev, companyRules: updated }));
+                          }}><X className="w-3 h-3" /></button>
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+
+                  {rule.learnedCoordinates && rule.learnedCoordinates.length > 0 && (
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-bold text-neutral-400 uppercase tracking-widest">Learned Redaction Areas ({rule.learnedCoordinates.length})</label>
+                      <div className="max-h-32 overflow-y-auto space-y-1 pr-2 custom-scrollbar">
+                        {rule.learnedCoordinates.map((coord, i) => (
+                          <div key={i} className="flex items-center justify-between p-2 bg-neutral-50 dark:bg-neutral-800/50 rounded-lg border border-neutral-100 dark:border-neutral-800 text-[10px]">
+                            <div className="flex flex-col">
+                              <span className="font-bold text-neutral-500">Page {coord.pageIndex + 1}</span>
+                              <span className="font-medium">{coord.label}</span>
+                            </div>
+                            <div className="flex items-center gap-3">
+                              <span className="text-neutral-400 font-mono">[{Math.round(coord.x)}%, {Math.round(coord.y)}%]</span>
+                              <button 
+                                onClick={() => {
+                                  const updated = settings.companyRules.map(r => r.id === rule.id ? { ...r, learnedCoordinates: r.learnedCoordinates?.filter((_, idx) => idx !== i) } : r);
+                                  setSettings(prev => ({ ...prev, companyRules: updated }));
+                                }}
+                                className="text-neutral-400 hover:text-red-500 transition-colors"
+                              >
+                                <Trash2 className="w-3 h-3" />
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-bold text-neutral-400 uppercase tracking-widest">Regex Patterns</label>
+                      <input 
+                        type="text"
+                        placeholder="Add regex (Enter)..."
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            const val = e.currentTarget.value.trim();
+                            if (val) {
+                              const updated = settings.companyRules.map(r => r.id === rule.id ? { ...r, patterns: [...r.patterns, val] } : r);
+                              setSettings(prev => ({ ...prev, companyRules: updated }));
+                              e.currentTarget.value = '';
+                            }
+                          }
+                        }}
+                        className="w-full px-3 py-2 bg-neutral-50 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-xl text-xs outline-none focus:ring-2 focus:ring-black dark:focus:ring-white"
+                      />
+                      <div className="flex flex-wrap gap-2">
+                        {rule.patterns.map((pattern, i) => (
+                          <span key={i} className="px-2 py-1 bg-neutral-100 dark:bg-neutral-800 rounded text-[10px] font-medium flex items-center gap-1">
+                            {pattern}
+                            <button onClick={() => {
+                              const updated = settings.companyRules.map(r => r.id === rule.id ? { ...r, patterns: r.patterns.filter((_, idx) => idx !== i) } : r);
+                              setSettings(prev => ({ ...prev, companyRules: updated }));
+                            }}><X className="w-3 h-3" /></button>
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </section>
 
         {/* Appearance */}
         <section className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-3xl p-8">
@@ -2273,6 +3422,400 @@ function SettingsView({ settings, setSettings, onBack, activeFile, setFiles }: {
           </div>
         </section>
       </div>
+    </div>
+  );
+}
+
+function TrainingView({ settings, setSettings, addAlert }: {
+  settings: AppSettings;
+  setSettings: React.Dispatch<React.SetStateAction<AppSettings>>;
+  addAlert: (type: any, msg: string) => void;
+}) {
+  const [session, setSession] = useState<TrainingSession>({
+    id: Math.random().toString(36).substring(7),
+    status: 'idle'
+  });
+  const [progress, setProgress] = useState(0);
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>, type: 'original' | 'redacted') => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setSession(prev => ({
+      ...prev,
+      [type === 'original' ? 'originalFile' : 'redactedFile']: file
+    }));
+  };
+
+  const runTraining = async () => {
+    if (!session.originalFile || !session.redactedFile) {
+      addAlert('error', 'Please upload both original and redacted files.');
+      return;
+    }
+
+    setSession(prev => ({ ...prev, status: 'analyzing' }));
+    setProgress(0);
+
+    try {
+      const originalUrl = URL.createObjectURL(session.originalFile);
+      const redactedUrl = URL.createObjectURL(session.redactedFile);
+
+      const originalPdf = await pdfjs.getDocument(originalUrl).promise;
+      const redactedPdf = await pdfjs.getDocument(redactedUrl).promise;
+
+      if (originalPdf.numPages !== redactedPdf.numPages) {
+        throw new Error('PDFs must have the same number of pages.');
+      }
+
+      let companyName = "Unknown Company";
+      const learnedCoordinates: any[] = [];
+      const identifiers: string[] = [];
+      const sensitiveTerms: string[] = [];
+
+      // 1. Identify Company from first page (Local OCR)
+      const firstPage = await originalPdf.getPage(1);
+      const viewport = firstPage.getViewport({ scale: 2.0 });
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+      await firstPage.render({ canvasContext: ctx!, viewport, canvas }).promise;
+      const firstPageImage = canvas.toDataURL('image/png');
+
+      const ocrData = await performLocalOCR(firstPageImage) as any;
+      const text = ocrData.text;
+      const words = ocrData.words;
+
+      // Try to match existing company
+      const matchedRule = settings.companyRules?.find(r => 
+        (r.identifiers || []).some(id => text.toLowerCase().includes(id.toLowerCase()))
+      );
+
+      if (matchedRule) {
+        companyName = matchedRule.name;
+        identifiers.push(...(matchedRule.identifiers || []));
+        sensitiveTerms.push(...(matchedRule.sensitiveTerms || []));
+      } else {
+        // If no match, try to guess name from first line or common patterns
+        companyName = text.split('\n')[0].substring(0, 30) || "New Company";
+        // Extract some potential identifiers (long words, unique strings)
+        const potentialIds = words
+          .filter(w => w.text.length > 5 && /^[A-Z0-9]+$/.test(w.text))
+          .map(w => w.text)
+          .slice(0, 5);
+        identifiers.push(...potentialIds);
+      }
+
+      // 2. Compare pages to find redactions
+      for (let i = 1; i <= originalPdf.numPages; i++) {
+        setProgress(Math.round((i / originalPdf.numPages) * 100));
+        
+        const origPage = await originalPdf.getPage(i);
+        const redPage = await redactedPdf.getPage(i);
+        
+        const vp = origPage.getViewport({ scale: 2.0 }); // Use higher scale for better OCR alignment
+        const canvasOrig = document.createElement('canvas');
+        const canvasRed = document.createElement('canvas');
+        canvasOrig.width = vp.width; canvasOrig.height = vp.height;
+        canvasRed.width = vp.width; canvasRed.height = vp.height;
+        
+        await origPage.render({ canvasContext: canvasOrig.getContext('2d')!, viewport: vp, canvas: canvasOrig }).promise;
+        await redPage.render({ canvasContext: canvasRed.getContext('2d')!, viewport: vp, canvas: canvasRed }).promise;
+
+        const imgOrig = canvasOrig.getContext('2d')!.getImageData(0, 0, vp.width, vp.height);
+        const imgRed = canvasRed.getContext('2d')!.getImageData(0, 0, vp.width, vp.height);
+        
+        const boxes = findRedactedBoxes(imgOrig, imgRed, vp.width, vp.height);
+        
+        if (boxes.length > 0) {
+          // Perform OCR on the original page to label boxes
+          const pageOcr = await performLocalOCR(canvasOrig.toDataURL('image/png')) as any;
+          
+          boxes.forEach(box => {
+            // Find words inside this box
+            const boxWords = pageOcr.words.filter(w => {
+              const wx = (w.x / vp.width) * 100;
+              const wy = (w.y / vp.height) * 100;
+              const ww = (w.width / vp.width) * 100;
+              const wh = (w.height / vp.height) * 100;
+              
+              // Simple overlap check
+              return wx >= box.x - 1 && wx + ww <= box.x + box.width + 1 &&
+                     wy >= box.y - 1 && wy + wh <= box.y + box.height + 1;
+            });
+
+            const label = boxWords.map(w => w.text).join(' ') || "Redacted Area";
+            learnedCoordinates.push({
+              pageIndex: i - 1,
+              ...box,
+              label
+            });
+          });
+        }
+      }
+
+      const newRule: CompanyRule = {
+        id: Math.random().toString(36).substring(7),
+        name: companyName,
+        patterns: [],
+        sensitiveTerms: sensitiveTerms,
+        learnedCoordinates,
+        identifiers,
+        description: `Learned from training session ${session.id}`
+      };
+
+      setSession(prev => ({
+        ...prev,
+        status: 'completed',
+        learnedData: {
+          companyName,
+          suggestedRules: newRule
+        }
+      }));
+
+      addAlert('success', `Training complete! Detected: ${companyName}`);
+
+    } catch (error) {
+      console.error(error);
+      setSession(prev => ({ ...prev, status: 'error' }));
+      addAlert('error', 'Training failed: ' + (error instanceof Error ? error.message : 'Unknown error'));
+    }
+  };
+
+  const saveLearnedRule = () => {
+    if (session.learnedData) {
+      setSettings(prev => ({
+        ...prev,
+        companyRules: [...prev.companyRules, session.learnedData!.suggestedRules]
+      }));
+      addAlert('success', 'Company rule saved to library.');
+      setSession({ id: Math.random().toString(36).substring(7), status: 'idle' });
+    }
+  };
+
+  function findRedactedBoxes(orig: ImageData, red: ImageData, width: number, height: number) {
+    const diff: boolean[] = new Array(width * height).fill(false);
+    let hasDiff = false;
+
+    for (let i = 0; i < orig.data.length; i += 4) {
+      const r1 = orig.data[i], g1 = orig.data[i+1], b1 = orig.data[i+2];
+      const r2 = red.data[i], g2 = red.data[i+1], b2 = red.data[i+2];
+      
+      const isBlack = r2 < 30 && g2 < 30 && b2 < 30;
+      const wasNotBlack = r1 > 50 || g1 > 50 || b1 > 50;
+
+      if (isBlack && wasNotBlack) {
+        diff[i / 4] = true;
+        hasDiff = true;
+      }
+    }
+
+    if (!hasDiff) return [];
+
+    const boxes: { x: number, y: number, width: number, height: number }[] = [];
+    const visited = new Set<number>();
+
+    for (let y = 0; y < height; y += 10) {
+      for (let x = 0; x < width; x += 10) {
+        const idx = y * width + x;
+        if (diff[idx] && !visited.has(idx)) {
+          let minX = x, maxX = x, minY = y, maxY = y;
+          const stack = [[x, y]];
+          visited.add(idx);
+
+          while (stack.length > 0) {
+            const [cx, cy] = stack.pop()!;
+            minX = Math.min(minX, cx);
+            maxX = Math.max(maxX, cx);
+            minY = Math.min(minY, cy);
+            maxY = Math.max(maxY, cy);
+
+            const neighbors = [[cx+10, cy], [cx-10, cy], [cx, cy+10], [cx, cy-10]];
+            for (const [nx, ny] of neighbors) {
+              if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+                const nidx = ny * width + nx;
+                if (diff[nidx] && !visited.has(nidx)) {
+                  visited.add(nidx);
+                  stack.push([nx, ny]);
+                }
+              }
+            }
+          }
+
+          const w = maxX - minX;
+          const h = maxY - minY;
+          if (w > 20 && h > 10) {
+            boxes.push({
+              x: (minX / width) * 100,
+              y: (minY / height) * 100,
+              width: (w / width) * 100,
+              height: (h / height) * 100
+            });
+          }
+        }
+      }
+    }
+
+    return boxes;
+  }
+
+  return (
+    <div className="max-w-4xl mx-auto">
+      <div className="mb-12">
+        <h2 className="text-4xl font-bold tracking-tight mb-4">AI Training Lab</h2>
+        <p className="text-neutral-500 dark:text-neutral-400 text-lg">
+          Train the AI by providing examples of original and redacted documents. 
+          The AI will learn the company's layout and specific redaction requirements.
+        </p>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mb-12">
+        <div className="space-y-4">
+          <label className="block text-sm font-bold uppercase tracking-wider text-neutral-500">1. Original Document (Unredacted)</label>
+          <div className={cn(
+            "relative h-48 border-2 border-dashed rounded-3xl flex flex-col items-center justify-center transition-all",
+            session.originalFile ? "border-emerald-500 bg-emerald-50 dark:bg-emerald-900/10" : "border-neutral-200 dark:border-neutral-800 hover:border-black dark:hover:border-white"
+          )}>
+            <input 
+              type="file" 
+              accept=".pdf" 
+              onChange={(e) => handleFileChange(e, 'original')}
+              className="absolute inset-0 opacity-0 cursor-pointer"
+            />
+            {session.originalFile ? (
+              <>
+                <CheckCircle2 className="w-8 h-8 text-emerald-500 mb-2" />
+                <span className="text-sm font-medium">{session.originalFile.name}</span>
+              </>
+            ) : (
+              <>
+                <FileText className="w-8 h-8 text-neutral-400 mb-2" />
+                <span className="text-sm text-neutral-500">Upload Original PDF</span>
+              </>
+            )}
+          </div>
+        </div>
+
+        <div className="space-y-4">
+          <label className="block text-sm font-bold uppercase tracking-wider text-neutral-500">2. Rejected Document (Redacted)</label>
+          <div className={cn(
+            "relative h-48 border-2 border-dashed rounded-3xl flex flex-col items-center justify-center transition-all",
+            session.redactedFile ? "border-emerald-500 bg-emerald-50 dark:bg-emerald-900/10" : "border-neutral-200 dark:border-neutral-800 hover:border-black dark:hover:border-white"
+          )}>
+            <input 
+              type="file" 
+              accept=".pdf" 
+              onChange={(e) => handleFileChange(e, 'redacted')}
+              className="absolute inset-0 opacity-0 cursor-pointer"
+            />
+            {session.redactedFile ? (
+              <>
+                <CheckCircle2 className="w-8 h-8 text-emerald-500 mb-2" />
+                <span className="text-sm font-medium">{session.redactedFile.name}</span>
+              </>
+            ) : (
+              <>
+                <EyeOff className="w-8 h-8 text-neutral-400 mb-2" />
+                <span className="text-sm text-neutral-500">Upload Redacted PDF</span>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {session.status === 'analyzing' ? (
+        <div className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-3xl p-12 text-center">
+          <RefreshCw className="w-12 h-12 animate-spin mx-auto mb-6 text-neutral-400" />
+          <h3 className="text-2xl font-bold mb-2">Analyzing Documents...</h3>
+          <p className="text-neutral-500 mb-8">Comparing layouts and identifying redaction patterns.</p>
+          <div className="w-full max-w-md mx-auto h-2 bg-neutral-100 dark:bg-neutral-800 rounded-full overflow-hidden">
+            <motion.div 
+              className="h-full bg-black dark:bg-white"
+              initial={{ width: 0 }}
+              animate={{ width: `${progress}%` }}
+            />
+          </div>
+          <p className="mt-4 text-sm font-mono">{progress}% Complete</p>
+        </div>
+      ) : session.status === 'completed' && session.learnedData ? (
+        <motion.div 
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-3xl p-8"
+        >
+          <div className="flex items-center justify-between mb-8">
+            <div>
+              <h3 className="text-2xl font-bold mb-1">Training Results</h3>
+              <p className="text-neutral-500">The AI has successfully learned from your examples.</p>
+            </div>
+            <div className="px-4 py-2 bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400 rounded-full text-sm font-bold uppercase tracking-wider">
+              Success
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-8 mb-8">
+            <div className="space-y-4">
+              <label className="text-xs font-bold uppercase tracking-widest text-neutral-400">Detected Company</label>
+              <div className="p-4 bg-neutral-50 dark:bg-neutral-800 rounded-2xl border border-neutral-100 dark:border-neutral-800">
+                <p className="text-xl font-bold">{session.learnedData.companyName}</p>
+              </div>
+            </div>
+            <div className="space-y-4">
+              <label className="text-xs font-bold uppercase tracking-widest text-neutral-400">Learned Patterns</label>
+              <div className="p-4 bg-neutral-50 dark:bg-neutral-800 rounded-2xl border border-neutral-100 dark:border-neutral-800">
+                <p className="text-xl font-bold">{session.learnedData.suggestedRules.learnedCoordinates?.length || 0} Fixed Areas</p>
+              </div>
+            </div>
+            <div className="space-y-4">
+              <label className="text-xs font-bold uppercase tracking-widest text-neutral-400">Sensitive Terms</label>
+              <div className="p-4 bg-neutral-50 dark:bg-neutral-800 rounded-2xl border border-neutral-100 dark:border-neutral-800">
+                <p className="text-xl font-bold">{session.learnedData.suggestedRules.sensitiveTerms?.length || 0} Terms</p>
+              </div>
+            </div>
+          </div>
+
+          <div className="space-y-4 mb-8">
+            <label className="text-xs font-bold uppercase tracking-widest text-neutral-400">Company Identifiers</label>
+            <div className="flex flex-wrap gap-2">
+              {session.learnedData.suggestedRules.identifiers?.map((id, idx) => (
+                <span key={idx} className="px-3 py-1 bg-neutral-100 dark:bg-neutral-800 rounded-lg text-sm border border-neutral-200 dark:border-neutral-700">
+                  {id}
+                </span>
+              ))}
+            </div>
+          </div>
+
+          <div className="flex gap-4">
+            <button 
+              onClick={saveLearnedRule}
+              className="flex-1 py-4 bg-black dark:bg-white text-white dark:text-black rounded-2xl font-bold hover:opacity-90 transition-opacity flex items-center justify-center gap-2"
+            >
+              <Save className="w-5 h-5" />
+              Save to Company Library
+            </button>
+            <button 
+              onClick={() => setSession({ id: Math.random().toString(36).substring(7), status: 'idle' })}
+              className="px-8 py-4 bg-neutral-100 dark:bg-neutral-800 rounded-2xl font-bold hover:bg-neutral-200 dark:hover:bg-neutral-700 transition-colors"
+            >
+              Discard
+            </button>
+          </div>
+        </motion.div>
+      ) : (
+        <div className="flex flex-col items-center">
+          <button 
+            onClick={runTraining}
+            disabled={!session.originalFile || !session.redactedFile}
+            className="w-full max-w-md py-6 bg-black dark:bg-white text-white dark:text-black rounded-3xl font-bold text-xl hover:opacity-90 transition-opacity disabled:opacity-30 flex items-center justify-center gap-3 shadow-xl"
+          >
+            <Play className="w-6 h-6" />
+            Analyze & Train AI
+          </button>
+          <p className="mt-6 text-neutral-500 text-sm flex items-center gap-2">
+            <AlertCircle className="w-4 h-4" />
+            This process uses AI to compare document layouts and identify sensitive fields.
+          </p>
+        </div>
+      )}
     </div>
   );
 }
