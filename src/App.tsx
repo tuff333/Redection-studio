@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { 
   Upload, FileText, Settings, Layers, 
   Download, Trash2, CheckCircle2, AlertCircle,
-  Undo, Redo, Search, ChevronLeft, ChevronRight, Zap,
+  Undo, Redo, Search, SearchX, ChevronLeft, ChevronRight, Zap,
   Type as TypeIcon, Square, Highlighter, Sun, Moon,
   Monitor, Palette, Keyboard, X, Plus, Play, RefreshCw,
   Barcode, QrCode, GripVertical, Eye, EyeOff, ArrowUp, ArrowDown,
@@ -41,6 +41,7 @@ const DEFAULT_SETTINGS: AppSettings = {
     piiEnabled: true,
     barcodesEnabled: true,
     companyDataEnabled: true,
+    sensitivity: 0.7,
   },
   companyProfile: {
     name: '',
@@ -305,6 +306,7 @@ export default function App() {
                 onBack={() => setView(activeFileId ? 'editor' : 'home')} 
                 activeFile={activeFile}
                 setFiles={setFiles}
+                addAlert={addAlert}
               />
             </motion.div>
           )}
@@ -392,8 +394,10 @@ function EditorView({ file, settings, setSettings, onBack, addAlert, setFiles }:
     handle?: string;
     initialMouse: { x: number; y: number };
     initialRect: { x: number; y: number; width: number; height: number };
+    initialRects?: Record<string, { x: number; y: number; width: number; height: number }>;
   } | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const [sidebarTab, setSidebarTab] = useState<'ocr' | 'redactions' | 'history'>('redactions');
 
   const addToHistory = (newRedactions: RedactionBox[]) => {
     const nextHistory = [...history.slice(0, historyIndex + 1), newRedactions].slice(-50);
@@ -481,15 +485,21 @@ function EditorView({ file, settings, setSettings, onBack, addAlert, setFiles }:
       const dy = y - activeInteraction.initialMouse.y;
 
       const updated = redactions.map(r => {
-        if (r.id === activeInteraction.redactionId) {
+        const isTarget = r.id === activeInteraction.redactionId;
+        const isSelectedPart = redactions.find(red => red.id === activeInteraction.redactionId)?.isSelected && r.isSelected;
+        
+        if (isTarget || isSelectedPart) {
+          const initial = activeInteraction.initialRects?.[r.id] || (isTarget ? activeInteraction.initialRect : null);
+          if (!initial) return r;
+
           if (activeInteraction.type === 'drag') {
             return {
               ...r,
-              x: activeInteraction.initialRect.x + dx,
-              y: activeInteraction.initialRect.y + dy
+              x: initial.x + dx,
+              y: initial.y + dy
             };
           } else if (activeInteraction.type === 'resize' && activeInteraction.handle) {
-            let { x: rx, y: ry, width: rw, height: rh } = activeInteraction.initialRect;
+            let { x: rx, y: ry, width: rw, height: rh } = initial;
             const h = activeInteraction.handle;
 
             if (h.includes('e')) rw += dx;
@@ -607,19 +617,32 @@ function EditorView({ file, settings, setSettings, onBack, addAlert, setFiles }:
       if (e.key === 't') setTool('text');
       if (e.key === 'b') setTool('box');
       if (e.key === 'h') setTool('highlight');
+      if (e.key === 'v') setTool('selection');
+      if (e.key === 'a') handleAutoDetect();
+      if (e.key === 'o') handleOCR();
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
+        e.preventDefault();
+        setShowSearchPopup(true);
+      }
+      if (e.key === 'Escape') {
+        setShowSearchPopup(false);
+        setCommentModal(prev => ({ ...prev, isOpen: false }));
+        setShowConfirmApply(false);
+      }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [numPages, historyIndex, history]);
 
   const [isProcessing, setIsProcessing] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
   const [showSuggestions, setShowSuggestions] = useState(false);
   const commonSuggestions = [
     'Name', 'Email', 'Phone', 'SSN', 'Address', 'Credit Card', 'Date of Birth', 
     'Password', 'API Key', 'Secret', 'Confidential', 'Internal Only', 
     'Draft', 'Proprietary', 'Trade Secret', 'Financial Data', 'Medical Record',
-    'Customer ID', 'Account Number', 'IBAN', 'Passport Number', 'Driver License'
+    'Customer ID', 'Account Number', 'IBAN', 'Passport Number', 'Driver License',
+    'Tax ID', 'National ID', 'Social Security', 'Phone Number', 'Email Address',
+    'Home Address', 'Work Address', 'Billing Address', 'Shipping Address'
   ];
   const allSuggestions = Array.from(new Set([...commonSuggestions, ...(settings.searchHistory || [])]));
   const [isSearching, setIsSearching] = useState(false);
@@ -866,8 +889,11 @@ function EditorView({ file, settings, setSettings, onBack, addAlert, setFiles }:
       
       // 1. Perform Local OCR
       const ocrData = await performLocalOCR(imageData) as any;
-      const text = ocrData.text;
-      const words = ocrData.words;
+      if (!ocrData) {
+        throw new Error('OCR failed to return data');
+      }
+      const text = ocrData.text || '';
+      const words = ocrData.words || [];
 
       // 2. Company Identification (Local)
       let matchedRule: CompanyRule | null = null;
@@ -1003,6 +1029,9 @@ function EditorView({ file, settings, setSettings, onBack, addAlert, setFiles }:
       const canvas = canvasRef.current;
       const imageData = canvas.toDataURL('image/png');
       const ocrData = await performLocalOCR(imageData) as any;
+      if (!ocrData || !ocrData.words) {
+        throw new Error('OCR failed to return word data');
+      }
       
       const results: OCRResult[] = ocrData.words.map((word: any) => ({
         text: word.text,
@@ -1189,7 +1218,20 @@ function EditorView({ file, settings, setSettings, onBack, addAlert, setFiles }:
             <div className="flex items-center gap-4">
               <div className="flex items-center gap-2 bg-neutral-100 dark:bg-neutral-800 px-3 py-1.5 rounded-xl">
                 <button onClick={() => setPageNumber(p => Math.max(1, p - 1))} className="p-1 hover:bg-neutral-200 dark:hover:bg-neutral-700 rounded-lg transition-colors"><ChevronLeft className="w-4 h-4" /></button>
-                <span className="text-sm font-bold min-w-[60px] text-center">{pageNumber} / {numPages}</span>
+                <div className="flex items-center gap-1">
+                  <input 
+                    type="number"
+                    min="1"
+                    max={numPages}
+                    value={pageNumber}
+                    onChange={(e) => {
+                      const val = parseInt(e.target.value);
+                      if (val >= 1 && val <= numPages) setPageNumber(val);
+                    }}
+                    className="w-10 bg-transparent text-center font-bold text-sm outline-none focus:ring-1 focus:ring-black dark:focus:ring-white rounded"
+                  />
+                  <span className="text-sm font-bold text-neutral-400">/ {numPages}</span>
+                </div>
                 <button onClick={() => setPageNumber(p => Math.min(numPages, p + 1))} className="p-1 hover:bg-neutral-200 dark:hover:bg-neutral-700 rounded-lg transition-colors"><ChevronRight className="w-4 h-4" /></button>
               </div>
               <div className="h-4 w-px bg-neutral-200 dark:bg-neutral-800" />
@@ -1312,6 +1354,14 @@ function EditorView({ file, settings, setSettings, onBack, addAlert, setFiles }:
                         <span className="text-xs font-bold">Search</span>
                       </>
                     )}
+                  </button>
+                  <button 
+                    onClick={clearSearchMatches}
+                    className="px-4 py-2 bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400 rounded-xl hover:bg-neutral-200 dark:hover:bg-neutral-700 transition-colors flex items-center gap-2"
+                    title="Clear all search matches"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                    <span className="text-xs font-bold">Clear</span>
                   </button>
                   <button 
                     onClick={() => setShowSearchPopup(false)}
@@ -1539,11 +1589,19 @@ function EditorView({ file, settings, setSettings, onBack, addAlert, setFiles }:
                       setRedactions(updated);
                     }
 
+                    const initialRects: Record<string, { x: number; y: number; width: number; height: number }> = {};
+                    redactions.forEach(red => {
+                      if (red.isSelected) {
+                        initialRects[red.id] = { x: red.x, y: red.y, width: red.width, height: red.height };
+                      }
+                    });
+
                     setActiveInteraction({
                       type: 'drag',
                       redactionId: r.id,
                       initialMouse: { x: mx, y: my },
-                      initialRect: { x: r.x, y: r.y, width: r.width, height: r.height }
+                      initialRect: { x: r.x, y: r.y, width: r.width, height: r.height },
+                      initialRects
                     });
                   }}
                 >
@@ -1623,262 +1681,367 @@ function EditorView({ file, settings, setSettings, onBack, addAlert, setFiles }:
             </div>
           </div>
         </div>
+      </div>
 
         {/* Right Sidebar (Redaction List) */}
         <div className="w-80 bg-white dark:bg-neutral-900 rounded-3xl border border-neutral-200 dark:border-neutral-800 p-6 flex flex-col gap-6 shadow-sm">
-          <div className="flex flex-col gap-4">
-            <div className="flex items-center justify-between">
-              <h3 className="font-bold text-lg">Page OCR</h3>
-              {ocrStatus !== 'idle' && (
-                <span className={cn(
-                  "text-[10px] font-bold uppercase px-2 py-0.5 rounded",
-                  ocrStatus === 'loading' ? "bg-amber-100 text-amber-600" : 
-                  ocrStatus === 'success' ? "bg-emerald-100 text-emerald-600" : "bg-red-100 text-red-600"
-                )}>
-                  {ocrStatus}
-                </span>
-              )}
-            </div>
-            <div className="flex gap-2">
-              <button 
-                onClick={triggerOCR}
-                disabled={ocrStatus === 'loading'}
-                className="flex-1 py-2 border border-neutral-200 dark:border-neutral-800 rounded-xl text-xs font-medium hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors flex items-center justify-center gap-2"
+          <div className="flex p-1 bg-neutral-100 dark:bg-neutral-800 rounded-2xl">
+            {(['ocr', 'redactions', 'history'] as const).map(tab => (
+              <button
+                key={tab}
+                onClick={() => setSidebarTab(tab)}
+                className={cn(
+                  "flex-1 py-1.5 text-[10px] font-bold uppercase tracking-widest rounded-xl transition-all",
+                  sidebarTab === tab 
+                    ? "bg-white dark:bg-neutral-900 text-black dark:text-white shadow-sm" 
+                    : "text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300"
+                )}
               >
-                {ocrStatus === 'loading' ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Barcode className="w-3.5 h-3.5" />}
-                Run OCR on Page {pageNumber}
+                {tab}
               </button>
-              {ocrResults[pageNumber - 1] && (
+            ))}
+          </div>
+
+          {sidebarTab === 'ocr' && (
+            <div className="flex flex-col gap-4">
+              <div className="flex items-center justify-between">
+                <h3 className="font-bold text-lg">Page OCR</h3>
+                {ocrStatus !== 'idle' && (
+                  <span className={cn(
+                    "text-[10px] font-bold uppercase px-2 py-0.5 rounded",
+                    ocrStatus === 'loading' ? "bg-amber-100 text-amber-600" : 
+                    ocrStatus === 'success' ? "bg-emerald-100 text-emerald-600" : "bg-red-100 text-red-600"
+                  )}>
+                    {ocrStatus}
+                  </span>
+                )}
+              </div>
+              <div className="flex gap-2">
                 <button 
-                  onClick={() => {
-                    setOcrResults(prev => {
-                      const next = { ...prev };
-                      delete next[pageNumber - 1];
-                      return next;
-                    });
-                    setOcrStatus('idle');
-                  }}
-                  className="p-2 border border-neutral-200 dark:border-neutral-800 rounded-xl hover:bg-red-50 dark:hover:bg-red-950/30 text-neutral-400 hover:text-red-500 transition-colors"
-                  title="Clear OCR Results"
+                  onClick={triggerOCR}
+                  disabled={ocrStatus === 'loading'}
+                  className="flex-1 py-2 border border-neutral-200 dark:border-neutral-800 rounded-xl text-xs font-medium hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors flex items-center justify-center gap-2"
                 >
-                  <X className="w-4 h-4" />
+                  {ocrStatus === 'loading' ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Barcode className="w-3.5 h-3.5" />}
+                  Run OCR on Page {pageNumber}
                 </button>
+                {ocrResults[pageNumber - 1] && (
+                  <button 
+                    onClick={() => {
+                      setOcrResults(prev => {
+                        const next = { ...prev };
+                        delete next[pageNumber - 1];
+                        return next;
+                      });
+                      setOcrStatus('idle');
+                    }}
+                    className="p-2 border border-neutral-200 dark:border-neutral-800 rounded-xl hover:bg-red-50 dark:hover:bg-red-950/30 text-neutral-400 hover:text-red-500 transition-colors"
+                    title="Clear OCR Results"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
+              {ocrResults[pageNumber - 1] && (
+                <div className="flex flex-col gap-2">
+                  <button 
+                    onClick={() => {
+                      const results = ocrResults[pageNumber - 1];
+                      const newReds = results.map(res => ({
+                        id: Math.random().toString(36).substring(7),
+                        pageIndex: pageNumber - 1,
+                        x: res.x,
+                        y: res.y,
+                        width: res.width,
+                        height: res.height,
+                        text: res.text,
+                        label: 'OCR Detected',
+                        type: 'text' as const,
+                        isSelected: true,
+                      }));
+                      const updated = [...redactions, ...newReds];
+                      setRedactions(updated);
+                      addToHistory(updated);
+                      addAlert('success', `Redacted ${newReds.length} items from OCR.`);
+                    }}
+                    className="w-full py-2 bg-black dark:bg-white text-white dark:text-black rounded-xl text-xs font-bold hover:opacity-90 transition-opacity"
+                  >
+                    Redact All OCR Text
+                  </button>
+                  <div className="max-h-60 overflow-y-auto space-y-2 pr-1 custom-scrollbar">
+                    {(ocrResults[pageNumber - 1] || []).map((res, i) => (
+                      <div key={i} className="group p-2 bg-neutral-50 dark:bg-neutral-800/50 rounded-lg border border-neutral-100 dark:border-neutral-800 flex items-center justify-between gap-2">
+                        <span className="text-[10px] font-medium truncate flex-1">{res.text}</span>
+                        <button 
+                          onClick={() => {
+                            const newRedaction: RedactionBox = {
+                              id: Math.random().toString(36).substring(7),
+                              pageIndex: pageNumber - 1,
+                              x: res.x,
+                              y: res.y,
+                              width: res.width,
+                              height: res.height,
+                              text: res.text,
+                              label: 'OCR',
+                              type: 'text',
+                              isSelected: true,
+                            };
+                            const updated = [...redactions, newRedaction];
+                            setRedactions(updated);
+                            addToHistory(updated);
+                            addAlert('success', `Redacted: ${res.text}`);
+                          }}
+                          className="p-1 bg-neutral-200 dark:bg-neutral-700 rounded hover:bg-black dark:hover:bg-white hover:text-white dark:hover:text-black transition-all opacity-0 group-hover:opacity-100"
+                          title="Redact this"
+                        >
+                          <Zap className="w-3 h-3" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
               )}
             </div>
-            {ocrResults[pageNumber - 1] && (
+          )}
+
+          {sidebarTab === 'redactions' && (
+            <>
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-2">
+                  <h3 className="font-bold text-lg">Redactions</h3>
+                  <span className="text-xs bg-neutral-100 dark:bg-neutral-800 px-2 py-1 rounded-full font-mono">
+                    {redactions.length}
+                  </span>
+                </div>
+                <div className="flex items-center gap-1">
+                  <button 
+                    onClick={clearSearchMatches}
+                    className="p-1.5 hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded-lg transition-colors text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300"
+                    title="Clear search matches"
+                  >
+                    <SearchX className="w-4 h-4" />
+                  </button>
+                  <button 
+                    onClick={() => {
+                      if (confirm('Are you sure you want to remove ALL redactions?')) {
+                        setRedactions([]);
+                        addToHistory([]);
+                        addAlert('success', 'All redactions cleared');
+                      }
+                    }}
+                    className="p-1.5 hover:bg-red-50 dark:hover:bg-red-950/30 rounded-lg transition-colors text-neutral-400 hover:text-red-500"
+                    title="Clear all redactions"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex-1 overflow-auto flex flex-col gap-6 pr-2">
+                {redactions.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center h-full text-neutral-400 text-center">
+                    <FileText className="w-12 h-12 mb-4 opacity-20" />
+                    <p className="text-sm">No redactions detected yet. Use Search or draw manually.</p>
+                  </div>
+                ) : (
+                  Object.entries(
+                    redactions.reduce((acc, r) => {
+                      const page = r.pageIndex + 1;
+                      if (!acc[page]) acc[page] = [];
+                      acc[page].push(r);
+                      return acc;
+                    }, {} as Record<number, RedactionBox[]>)
+                  ).sort(([a], [b]) => Number(a) - Number(b)).map(([page, pageRedactions]) => (
+                    <div key={page} className="flex flex-col gap-3">
+                      <div className="flex items-center gap-2 px-1">
+                        <div className="h-px flex-1 bg-neutral-100 dark:bg-neutral-800" />
+                        <span className="text-[10px] font-bold text-neutral-400 uppercase tracking-widest">Page {page}</span>
+                        <div className="h-px flex-1 bg-neutral-100 dark:bg-neutral-800" />
+                      </div>
+                      {pageRedactions.map(r => (
+                        <div 
+                          key={r.id}
+                          draggable
+                          onDragStart={(e) => {
+                            e.dataTransfer.setData('redactionId', r.id);
+                            e.dataTransfer.effectAllowed = 'move';
+                          }}
+                          className={cn(
+                            "p-3 rounded-xl border transition-all group cursor-grab active:cursor-grabbing",
+                            r.isSelected ? "border-red-200 bg-red-50 dark:border-red-900/50 dark:bg-red-950/20" : "border-neutral-100 dark:border-neutral-800 hover:bg-neutral-50 dark:hover:bg-neutral-800"
+                          )}
+                        >
+                          <div className="flex items-center justify-between mb-2">
+                            <div className="flex items-center gap-2">
+                              <GripVertical className="w-3 h-3 text-neutral-300" />
+                              {r.type === 'highlight' ? <Highlighter className="w-3 h-3 text-neutral-400" /> : <Square className="w-3 h-3 text-neutral-400" />}
+                              <input 
+                                type="text"
+                                value={r.label || ''}
+                                placeholder="Label"
+                                onChange={(e) => {
+                                  const updated = redactions.map(item => 
+                                    item.id === r.id ? { ...item, label: e.target.value } : item
+                                  );
+                                  setRedactions(updated);
+                                  addToHistory(updated);
+                                }}
+                                className="text-[10px] font-bold uppercase tracking-wider bg-transparent outline-none w-24"
+                              />
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <button 
+                                onClick={() => {
+                                  const updated = redactions.map(item => 
+                                    item.id === r.id ? { ...item, isSelected: !item.isSelected } : item
+                                  );
+                                  setRedactions(updated);
+                                  addToHistory(updated);
+                                }}
+                                className={cn("p-1 rounded hover:bg-neutral-200 dark:hover:bg-neutral-700 transition-colors", r.isSelected ? "text-red-500" : "text-neutral-400")}
+                              >
+                                {r.isSelected ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
+                              </button>
+                              <button 
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  const updated = redactions.filter(item => item.id !== r.id);
+                                  setRedactions(updated);
+                                  addToHistory(updated);
+                                }}
+                                className="p-1 hover:text-red-500 transition-all text-neutral-400"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </div>
+
+                          <div className="flex flex-col gap-1">
+                            <div className="flex items-center justify-between">
+                              <label className="text-[8px] uppercase text-neutral-400">Private Comment / Reason</label>
+                              <button 
+                                onClick={() => {
+                                  setCommentModal({
+                                    isOpen: true,
+                                    redactionId: r.id,
+                                    comment: r.comment || ""
+                                  });
+                                }}
+                                className="text-[8px] font-bold text-indigo-500 hover:underline"
+                              >
+                                Expand / Edit
+                              </button>
+                            </div>
+                            {r.comment && (
+                              <p className="text-[10px] text-neutral-500 bg-neutral-50 dark:bg-neutral-800/50 p-2 rounded-lg line-clamp-2">
+                                {r.comment}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ))
+                )}
+              </div>
+
               <div className="flex flex-col gap-2">
+                <div className="flex gap-2">
+                  <button 
+                    onClick={() => {
+                      const updated = redactions.map(r => ({ ...r, isSelected: true }));
+                      setRedactions(updated);
+                      addToHistory(updated);
+                    }}
+                    className="flex-1 py-2 border border-neutral-200 dark:border-neutral-800 rounded-xl text-xs font-medium hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors"
+                  >
+                    Select All
+                  </button>
+                  <button 
+                    onClick={() => {
+                      const updated = redactions.map(r => ({ ...r, isSelected: false }));
+                      setRedactions(updated);
+                      addToHistory(updated);
+                    }}
+                    className="flex-1 py-2 border border-neutral-200 dark:border-neutral-800 rounded-xl text-xs font-medium hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors"
+                  >
+                    Deselect All
+                  </button>
+                </div>
                 <button 
                   onClick={() => {
-                    const results = ocrResults[pageNumber - 1];
-                    const newReds = results.map(res => ({
-                      id: Math.random().toString(36).substring(7),
-                      pageIndex: pageNumber - 1,
-                      x: res.x,
-                      y: res.y,
-                      width: res.width,
-                      height: res.height,
-                      text: res.text,
-                      label: 'OCR Detected',
-                      type: 'text' as const,
-                      isSelected: true,
-                    }));
-                    const updated = [...redactions, ...newReds];
+                    const updated = redactions.filter(r => !r.isSelected);
                     setRedactions(updated);
                     addToHistory(updated);
-                    addAlert('success', `Redacted ${newReds.length} items from OCR.`);
+                    addAlert('success', 'Deleted selected redactions');
                   }}
-                  className="w-full py-2 bg-black dark:bg-white text-white dark:text-black rounded-xl text-xs font-bold hover:opacity-90 transition-opacity"
+                  disabled={!redactions.some(r => r.isSelected)}
+                  className="w-full py-2 bg-red-500/10 text-red-500 rounded-xl text-xs font-medium hover:bg-red-500/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  Redact All OCR Text
+                  Delete Selected
                 </button>
-                <div className="max-h-60 overflow-y-auto space-y-2 pr-1 custom-scrollbar">
-                  {ocrResults[pageNumber - 1].map((res, i) => (
-                    <div key={i} className="group p-2 bg-neutral-50 dark:bg-neutral-800/50 rounded-lg border border-neutral-100 dark:border-neutral-800 flex items-center justify-between gap-2">
-                      <span className="text-[10px] font-medium truncate flex-1">{res.text}</span>
-                      <button 
-                        onClick={() => {
-                          const newRedaction: RedactionBox = {
-                            id: Math.random().toString(36).substring(7),
-                            pageIndex: pageNumber - 1,
-                            x: res.x,
-                            y: res.y,
-                            width: res.width,
-                            height: res.height,
-                            text: res.text,
-                            label: 'OCR',
-                            type: 'text',
-                            isSelected: true,
-                          };
-                          const updated = [...redactions, newRedaction];
-                          setRedactions(updated);
-                          addToHistory(updated);
-                          addAlert('success', `Redacted: ${res.text}`);
-                        }}
-                        className="p-1 bg-neutral-200 dark:bg-neutral-700 rounded hover:bg-black dark:hover:bg-white hover:text-white dark:hover:text-black transition-all opacity-0 group-hover:opacity-100"
-                        title="Redact this"
-                      >
-                        <Zap className="w-3 h-3" />
-                      </button>
-                    </div>
-                  ))}
-                </div>
               </div>
-            )}
-          </div>
+            </>
+          )}
 
-          <div className="h-px bg-neutral-100 dark:bg-neutral-800" />
-
-          <div className="flex items-center justify-between">
-            <h3 className="font-bold text-lg">Redactions</h3>
-            <span className="text-xs bg-neutral-100 dark:bg-neutral-800 px-2 py-1 rounded-full font-mono">
-              {redactions.filter(r => r.isSelected).length} Active
-            </span>
-          </div>
-
-          <div className="flex-1 overflow-auto flex flex-col gap-6 pr-2">
-            {redactions.length === 0 ? (
-              <div className="flex flex-col items-center justify-center h-full text-neutral-400 text-center">
-                <FileText className="w-12 h-12 mb-4 opacity-20" />
-                <p className="text-sm">No redactions detected yet. Use Search or draw manually.</p>
+          {sidebarTab === 'history' && (
+            <div className="flex flex-col gap-4 h-full">
+              <div className="flex items-center justify-between">
+                <h3 className="font-bold text-lg">History</h3>
+                <span className="text-xs bg-neutral-100 dark:bg-neutral-800 px-2 py-1 rounded-full font-mono">
+                  {historyIndex + 1} / {history.length}
+                </span>
               </div>
-            ) : (
-              Object.entries(
-                redactions.reduce((acc, r) => {
-                  const page = r.pageIndex + 1;
-                  if (!acc[page]) acc[page] = [];
-                  acc[page].push(r);
-                  return acc;
-                }, {} as Record<number, RedactionBox[]>)
-              ).sort(([a], [b]) => Number(a) - Number(b)).map(([page, pageRedactions]) => (
-                <div key={page} className="flex flex-col gap-3">
-                  <div className="flex items-center gap-2 px-1">
-                    <div className="h-px flex-1 bg-neutral-100 dark:bg-neutral-800" />
-                    <span className="text-[10px] font-bold text-neutral-400 uppercase tracking-widest">Page {page}</span>
-                    <div className="h-px flex-1 bg-neutral-100 dark:bg-neutral-800" />
-                  </div>
-                  {pageRedactions.map(r => (
-                    <div 
-                      key={r.id}
-                      draggable
-                      onDragStart={(e) => {
-                        e.dataTransfer.setData('redactionId', r.id);
-                        e.dataTransfer.effectAllowed = 'move';
-                      }}
-                      className={cn(
-                        "p-3 rounded-xl border transition-all group cursor-grab active:cursor-grabbing",
-                        r.isSelected ? "border-red-200 bg-red-50 dark:border-red-900/50 dark:bg-red-950/20" : "border-neutral-100 dark:border-neutral-800 hover:bg-neutral-50 dark:hover:bg-neutral-800"
-                      )}
-                    >
-                      <div className="flex items-center justify-between mb-2">
-                        <div className="flex items-center gap-2">
-                          <GripVertical className="w-3 h-3 text-neutral-300" />
-                          {r.type === 'highlight' ? <Highlighter className="w-3 h-3 text-neutral-400" /> : <Square className="w-3 h-3 text-neutral-400" />}
-                          <input 
-                            type="text"
-                            value={r.label || ''}
-                            placeholder="Label"
-                            onChange={(e) => {
-                              const updated = redactions.map(item => 
-                                item.id === r.id ? { ...item, label: e.target.value } : item
-                              );
-                              setRedactions(updated);
-                              addToHistory(updated);
-                            }}
-                            className="text-[10px] font-bold uppercase tracking-wider bg-transparent outline-none w-24"
-                          />
-                        </div>
-                        <div className="flex items-center gap-1">
-                          <button 
-                            onClick={() => {
-                              const updated = redactions.map(item => 
-                                item.id === r.id ? { ...item, isSelected: !item.isSelected } : item
-                              );
-                              setRedactions(updated);
-                              addToHistory(updated);
-                            }}
-                            className={cn("p-1 rounded hover:bg-neutral-200 dark:hover:bg-neutral-700 transition-colors", r.isSelected ? "text-red-500" : "text-neutral-400")}
-                          >
-                            {r.isSelected ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
-                          </button>
-                          <button 
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              const updated = redactions.filter(item => item.id !== r.id);
-                              setRedactions(updated);
-                              addToHistory(updated);
-                            }}
-                            className="p-1 hover:text-red-500 transition-all text-neutral-400"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      </div>
-
-                      <div className="flex flex-col gap-1">
-                        <div className="flex items-center justify-between">
-                          <label className="text-[8px] uppercase text-neutral-400">Private Comment / Reason</label>
-                          <button 
-                            onClick={() => {
-                              setCommentModal({
-                                isOpen: true,
-                                redactionId: r.id,
-                                comment: r.comment || ""
-                              });
-                            }}
-                            className="text-[8px] font-bold text-indigo-500 hover:underline"
-                          >
-                            Expand / Edit
-                          </button>
-                        </div>
-                        {r.comment && (
-                          <p className="text-[10px] text-neutral-500 bg-neutral-50 dark:bg-neutral-800/50 p-2 rounded-lg line-clamp-2">
-                            {r.comment}
-                          </p>
-                        )}
-                      </div>
+              <div className="flex-1 overflow-auto space-y-3 pr-2 custom-scrollbar">
+                {history.map((state, idx) => (
+                  <button
+                    key={idx}
+                    onClick={() => {
+                      setRedactions(state);
+                      setHistoryIndex(idx);
+                    }}
+                    className={cn(
+                      "w-full p-4 rounded-2xl border text-left transition-all relative overflow-hidden",
+                      historyIndex === idx 
+                        ? "border-black dark:border-white bg-neutral-50 dark:bg-neutral-800" 
+                        : "border-neutral-100 dark:border-neutral-800 hover:bg-neutral-50 dark:hover:bg-neutral-800"
+                    )}
+                  >
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-[10px] font-bold uppercase tracking-widest text-neutral-400">
+                        {idx === 0 ? 'Initial State' : `Action ${idx}`}
+                      </span>
+                      {historyIndex === idx && <div className="w-2 h-2 rounded-full bg-emerald-500" />}
                     </div>
-                  ))}
-                </div>
-              ))
-            )}
-          </div>
-
-          <div className="flex flex-col gap-2">
-            <div className="flex gap-2">
-              <button 
-                onClick={() => {
-                  const updated = redactions.map(r => ({ ...r, isSelected: true }));
-                  setRedactions(updated);
-                  addToHistory(updated);
-                }}
-                className="flex-1 py-2 border border-neutral-200 dark:border-neutral-800 rounded-xl text-xs font-medium hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors"
-              >
-                Select All
-              </button>
-              <button 
-                onClick={() => {
-                  const updated = redactions.map(r => ({ ...r, isSelected: false }));
-                  setRedactions(updated);
-                  addToHistory(updated);
-                }}
-                className="flex-1 py-2 border border-neutral-200 dark:border-neutral-800 rounded-xl text-xs font-medium hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors"
-              >
-                Deselect All
-              </button>
+                    <p className="text-xs font-medium">{state.length} Redactions</p>
+                    <div className="mt-2 flex gap-1">
+                      {Array.from(new Set(state.map(r => r.type))).map(type => (
+                        <span key={type} className="text-[8px] px-1.5 py-0.5 bg-neutral-200 dark:bg-neutral-700 rounded uppercase font-bold">
+                          {type}
+                        </span>
+                      ))}
+                    </div>
+                  </button>
+                )).reverse()}
+              </div>
+              <div className="flex gap-2">
+                <button 
+                  onClick={undo}
+                  disabled={historyIndex === 0}
+                  className="flex-1 py-2 border border-neutral-200 dark:border-neutral-800 rounded-xl text-xs font-medium hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors disabled:opacity-50"
+                >
+                  Undo
+                </button>
+                <button 
+                  onClick={redo}
+                  disabled={historyIndex === history.length - 1}
+                  className="flex-1 py-2 border border-neutral-200 dark:border-neutral-800 rounded-xl text-xs font-medium hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors disabled:opacity-50"
+                >
+                  Redo
+                </button>
+              </div>
             </div>
-            <button 
-              onClick={() => {
-                const updated = redactions.filter(r => !r.isSelected);
-                setRedactions(updated);
-                addToHistory(updated);
-                addAlert('success', 'Deleted selected redactions');
-              }}
-              disabled={!redactions.some(r => r.isSelected)}
-              className="w-full py-2 bg-red-500/10 text-red-500 rounded-xl text-xs font-medium hover:bg-red-500/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              Delete Selected
-            </button>
-          </div>
+          )}
         </div>
       </div>
 
@@ -2174,8 +2337,9 @@ function BatchView({ files, setFiles, settings, setSettings, addAlert }: {
 
           // Local OCR
           const ocrData = await performLocalOCR(imageData) as any;
-          const text = ocrData.text;
-          const words = ocrData.words;
+          if (!ocrData) continue;
+          const text = ocrData.text || '';
+          const words = ocrData.words || [];
 
           // Company Detection (Local)
           let matchedRule: CompanyRule | null = null;
@@ -2210,7 +2374,7 @@ function BatchView({ files, setFiles, settings, setSettings, addAlert }: {
 
           // Local PII
           if (batchRules.pii) {
-            const piiResults = detectPIILocal(text, words);
+            const piiResults = detectPIILocal(text, words, settings.aiDefaults?.sensitivity || 0.5);
             piiResults.forEach((res, idx) => {
               allRedactions.push({
                 id: `pii-${Date.now()}-${idx}`,
@@ -2232,7 +2396,7 @@ function BatchView({ files, setFiles, settings, setSettings, addAlert }: {
             ...(matchedRule?.sensitiveTerms || [])
           ];
           if (termsToSearch.length > 0) {
-            const termResults = detectSensitiveTermsLocal(text, words, termsToSearch);
+            const termResults = detectSensitiveTermsLocal(text, words, termsToSearch, settings.aiDefaults?.sensitivity || 0.5);
             termResults.forEach((res, idx) => {
               allRedactions.push({
                 id: `term-${Date.now()}-${idx}`,
@@ -2408,12 +2572,56 @@ function BatchView({ files, setFiles, settings, setSettings, addAlert }: {
 
           {settings.savedBatchRules.length > 0 && (
             <section className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-3xl p-6">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="font-bold flex items-center gap-2 text-sm uppercase tracking-wider text-neutral-400">
-                  <Bookmark className="w-4 h-4" />
-                  Saved Presets
-                </h3>
-              </div>
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="font-bold flex items-center gap-2 text-sm uppercase tracking-wider text-neutral-400">
+              <Bookmark className="w-4 h-4" />
+              Saved Presets
+            </h3>
+            <div className="flex gap-2">
+              <button 
+                onClick={() => {
+                  const data = JSON.stringify(settings.savedBatchRules, null, 2);
+                  const blob = new Blob([data], { type: 'application/json' });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement('a');
+                  a.href = url;
+                  a.download = 'batch_rules_export.json';
+                  a.click();
+                  addAlert('success', 'Batch rules exported.');
+                }}
+                className="p-1.5 hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded-lg text-neutral-400 transition-colors"
+                title="Export Rules"
+              >
+                <Download className="w-4 h-4" />
+              </button>
+              <label className="p-1.5 hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded-lg text-neutral-400 transition-colors cursor-pointer" title="Import Rules">
+                <Upload className="w-4 h-4" />
+                <input 
+                  type="file" 
+                  accept=".json"
+                  className="hidden"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) {
+                      const reader = new FileReader();
+                      reader.onload = (event) => {
+                        try {
+                          const imported = JSON.parse(event.target?.result as string);
+                          if (Array.isArray(imported)) {
+                            setSettings(prev => ({ ...prev, savedBatchRules: [...prev.savedBatchRules, ...imported] }));
+                            addAlert('success', `Imported ${imported.length} rule sets.`);
+                          }
+                        } catch (err) {
+                          addAlert('error', 'Failed to import rules.');
+                        }
+                      };
+                      reader.readAsText(file);
+                    }
+                  }}
+                />
+              </label>
+            </div>
+          </div>
               
               <div className="mb-4 relative">
                 <input 
@@ -2515,12 +2723,13 @@ function BatchView({ files, setFiles, settings, setSettings, addAlert }: {
   );
 }
 
-function SettingsView({ settings, setSettings, onBack, activeFile, setFiles }: { 
+function SettingsView({ settings, setSettings, onBack, activeFile, setFiles, addAlert }: { 
   settings: AppSettings; 
   setSettings: React.Dispatch<React.SetStateAction<AppSettings>>;
   onBack: () => void;
   activeFile?: PDFFile;
   setFiles: React.Dispatch<React.SetStateAction<PDFFile[]>>;
+  addAlert: (type: any, msg: string) => void;
 }) {
   const [exportOnlySelected, setExportOnlySelected] = useState(false);
   const [lastSaved, setLastSaved] = useState<number | null>(null);
@@ -2946,29 +3155,6 @@ function SettingsView({ settings, setSettings, onBack, activeFile, setFiles }: {
             </div>
 
             <div className="pt-4 border-t border-neutral-100 dark:border-neutral-800 space-y-4">
-              <div className="flex items-center justify-between mb-2">
-                <label className="text-sm font-medium text-neutral-500">Detection Sensitivity</label>
-                <span className="text-xs font-bold px-2 py-0.5 bg-neutral-100 dark:bg-neutral-800 rounded-lg">
-                  {Math.round((settings.aiDefaults?.sensitivity || 0.5) * 100)}%
-                </span>
-              </div>
-              <input 
-                type="range"
-                min="0"
-                max="1"
-                step="0.05"
-                value={settings.aiDefaults?.sensitivity || 0.5}
-                onChange={(e) => setSettings(prev => ({ ...prev, aiDefaults: { ...prev.aiDefaults, sensitivity: parseFloat(e.target.value) } }))}
-                className="w-full h-2 bg-neutral-100 dark:bg-neutral-800 rounded-lg appearance-none cursor-pointer accent-black dark:accent-white"
-              />
-              <div className="flex justify-between text-[10px] text-neutral-400 font-bold uppercase tracking-widest">
-                <span>Strict</span>
-                <span>Balanced</span>
-                <span>Aggressive</span>
-              </div>
-            </div>
-
-            <div className="pt-4 border-t border-neutral-100 dark:border-neutral-800 space-y-4">
               <label className="block text-sm font-medium text-neutral-500 mb-2">Company Profile</label>
               
               <div>
@@ -3072,15 +3258,26 @@ function SettingsView({ settings, setSettings, onBack, activeFile, setFiles }: {
                 <div key={rule.id} className="p-6 border border-neutral-200 dark:border-neutral-800 rounded-2xl space-y-4">
                   <div className="flex items-center justify-between">
                     <div className="flex flex-col gap-1">
-                      <input 
-                        type="text"
-                        value={rule.name}
-                        onChange={(e) => {
-                          const updated = settings.companyRules.map(r => r.id === rule.id ? { ...r, name: e.target.value } : r);
-                          setSettings(prev => ({ ...prev, companyRules: updated }));
-                        }}
-                        className="font-bold bg-transparent outline-none focus:ring-2 focus:ring-black dark:focus:ring-white rounded px-2 text-lg"
-                      />
+                      <div className="flex items-center gap-2">
+                        <input 
+                          type="text"
+                          value={rule.name}
+                          onChange={(e) => {
+                            const updated = settings.companyRules.map(r => r.id === rule.id ? { ...r, name: e.target.value } : r);
+                            setSettings(prev => ({ ...prev, companyRules: updated }));
+                          }}
+                          className="font-bold bg-transparent outline-none focus:ring-2 focus:ring-black dark:focus:ring-white rounded px-2 text-lg"
+                        />
+                        <button 
+                          onClick={() => {
+                            addAlert('info', `Editing "${rule.name}" in-place.`);
+                          }}
+                          className="p-1 hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded-lg text-neutral-400"
+                          title="Edit Rule"
+                        >
+                          <Settings className="w-4 h-4" />
+                        </button>
+                      </div>
                       {rule.description && <p className="text-[10px] text-neutral-400 px-2">{rule.description}</p>}
                     </div>
                     <button 
@@ -3482,8 +3679,11 @@ function TrainingView({ settings, setSettings, addAlert }: {
       const firstPageImage = canvas.toDataURL('image/png');
 
       const ocrData = await performLocalOCR(firstPageImage) as any;
-      const text = ocrData.text;
-      const words = ocrData.words;
+      if (!ocrData) {
+        throw new Error('OCR failed on first page');
+      }
+      const text = ocrData.text || '';
+      const words = ocrData.words || [];
 
       // Try to match existing company
       const matchedRule = settings.companyRules?.find(r => 
@@ -3529,10 +3729,20 @@ function TrainingView({ settings, setSettings, addAlert }: {
         if (boxes.length > 0) {
           // Perform OCR on the original page to label boxes
           const pageOcr = await performLocalOCR(canvasOrig.toDataURL('image/png')) as any;
+          if (!pageOcr || !pageOcr.words) {
+            boxes.forEach(box => {
+              learnedCoordinates.push({
+                pageIndex: i - 1,
+                ...box,
+                label: "Redacted Area"
+              });
+            });
+            continue;
+          }
           
           boxes.forEach(box => {
             // Find words inside this box
-            const boxWords = pageOcr.words.filter(w => {
+            const boxWords = pageOcr.words.filter((w: any) => {
               const wx = (w.x / vp.width) * 100;
               const wy = (w.y / vp.height) * 100;
               const ww = (w.width / vp.width) * 100;

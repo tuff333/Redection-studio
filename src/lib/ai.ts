@@ -24,8 +24,9 @@ export async function performLocalOCR(image: string): Promise<Tesseract.Page> {
   return ret.data;
 }
 
-export function detectPIILocal(text: string, words: Tesseract.Word[], sensitivity: number = 0.5): LocalDetectionResult[] {
+export function detectPIILocal(text: string, words: Tesseract.Word[] = [], sensitivity: number = 0.5): LocalDetectionResult[] {
   const results: LocalDetectionResult[] = [];
+  const wordsToUse = Array.isArray(words) ? words : [];
 
   // Add more patterns if sensitivity is high
   const activePatterns = { ...PII_PATTERNS };
@@ -44,7 +45,7 @@ export function detectPIILocal(text: string, words: Tesseract.Word[], sensitivit
       let currentPos = 0;
       const matchedWords: Tesseract.Word[] = [];
       
-      for (const word of words) {
+      for (const word of wordsToUse) {
         const wordStart = currentPos;
         const wordEnd = currentPos + word.text.length;
         
@@ -74,8 +75,9 @@ export function detectPIILocal(text: string, words: Tesseract.Word[], sensitivit
   return results;
 }
 
-export function detectSensitiveTermsLocal(text: string, words: Tesseract.Word[], terms: string[], sensitivity: number = 0.5): LocalDetectionResult[] {
+export function detectSensitiveTermsLocal(text: string, words: Tesseract.Word[] = [], terms: string[], sensitivity: number = 0.5): LocalDetectionResult[] {
   const results: LocalDetectionResult[] = [];
+  const wordsToUse = Array.isArray(words) ? words : [];
   
   for (const term of terms) {
     if (!term.trim()) continue;
@@ -92,7 +94,7 @@ export function detectSensitiveTermsLocal(text: string, words: Tesseract.Word[],
       let currentPos = 0;
       const matchedWords: Tesseract.Word[] = [];
       
-      for (const word of words) {
+      for (const word of wordsToUse) {
         const wordStart = currentPos;
         const wordEnd = currentPos + word.text.length;
         
