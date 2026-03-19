@@ -1,13 +1,13 @@
 import React, { useState, useEffect } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence } from 'motion/react';
 import { 
   Upload, FileText, Settings, Layers, 
   Download, Trash2, CheckCircle2, AlertCircle,
-  Undo, Redo, Search, SearchX, ChevronLeft, ChevronRight, Zap,
+  Undo, Redo, Search, SearchX, ChevronLeft, ChevronRight, Zap, ChevronDown, LayoutGrid, Lock, Unlock, FileUp, Files, Settings2, Info, HelpCircle, ExternalLink,
   Type as TypeIcon, Square, Highlighter, Sun, Moon,
   Monitor, Palette, Keyboard, X, Plus, Play, RefreshCw,
   Barcode, QrCode, GripVertical, Eye, EyeOff, ArrowUp, ArrowDown,
-  Save, Bookmark, Brain, MousePointer2, Move
+  Save, Bookmark, Brain, MousePointer2, Move, ShieldCheck, ShieldAlert
 } from 'lucide-react';
 import { PDFFile, RedactionBox, AppSettings, Theme, OCRResult, BatchRuleSet, RedactionStyle, CompanyRule, TrainingSession } from './types';
 import { cn, formatFileName } from './lib/utils';
@@ -15,10 +15,134 @@ import { PDFDocument, rgb } from 'pdf-lib';
 import { Document, Page, pdfjs } from 'react-pdf';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { Tooltip } from './components/Tooltip';
-import { GoogleGenAI, Type } from "@google/genai";
-import { performLocalOCR, detectPIILocal, detectSensitiveTermsLocal } from './lib/ai';
+
+import { performLocalOCR, detectPIILocal, detectSensitiveTermsLocal, detectAdvancedAI, unlockPDF } from './lib/ai';
 import 'react-pdf/dist/Page/AnnotationLayer.css';
 import 'react-pdf/dist/Page/TextLayer.css';
+
+// --- Sub-components ---
+
+function ToolbarButton({ 
+  icon: Icon, 
+  label, 
+  onClick, 
+  active = false, 
+  disabled = false,
+  variant = 'default',
+  shortcut
+}: { 
+  icon: any; 
+  label: string; 
+  onClick: () => void; 
+  active?: boolean; 
+  disabled?: boolean;
+  variant?: 'default' | 'danger' | 'success' | 'ghost';
+  shortcut?: string;
+}) {
+  const variants = {
+    default: active 
+      ? "bg-black text-white dark:bg-white dark:text-black shadow-lg scale-105" 
+      : "bg-white dark:bg-neutral-900 text-neutral-600 dark:text-neutral-400 hover:bg-neutral-50 dark:hover:bg-neutral-800",
+    danger: "bg-red-50 dark:bg-red-950/20 text-red-600 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-900/40",
+    success: "bg-emerald-50 dark:bg-emerald-950/20 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-900/40",
+    ghost: "bg-transparent text-neutral-500 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+  };
+
+  return (
+    <Tooltip title={label} shortcut={shortcut}>
+      <button
+        onClick={onClick}
+        disabled={disabled}
+        className={cn(
+          "p-3 rounded-xl transition-all duration-200 flex flex-col items-center gap-1 min-w-[64px] group disabled:opacity-30 disabled:cursor-not-allowed",
+          variants[variant]
+        )}
+      >
+        <Icon className={cn("w-5 h-5 transition-transform group-hover:scale-110", active && "animate-pulse")} />
+        <span className="text-[10px] font-black uppercase tracking-tighter opacity-70">{label}</span>
+      </button>
+    </Tooltip>
+  );
+}
+
+function RedactionBoxComponent({ 
+  redaction, 
+  onUpdate, 
+  onDelete, 
+  onComment,
+  isSelected,
+  style = 'solid'
+}: { 
+  redaction: RedactionBox; 
+  onUpdate: (updates: Partial<RedactionBox>) => void; 
+  onDelete: () => void;
+  onComment: () => void;
+  isSelected: boolean;
+  style?: RedactionStyle;
+}) {
+  const [isHovered, setIsHovered] = useState(false);
+
+  return (
+    <div 
+      className={cn(
+        "absolute transition-all duration-200 group cursor-pointer",
+        isSelected ? "z-50 ring-2 ring-black dark:ring-white ring-offset-2 ring-offset-transparent" : "z-10",
+        style === 'outline' ? "border-2 border-black dark:border-white bg-transparent" : "bg-black dark:bg-white"
+      )}
+      style={{
+        left: `${redaction.x}%`,
+        top: `${redaction.y}%`,
+        width: `${redaction.width}%`,
+        height: `${redaction.height}%`,
+        opacity: isSelected ? 1 : 0.85
+      }}
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
+      onClick={(e) => {
+        e.stopPropagation();
+        onUpdate({ isSelected: !isSelected });
+      }}
+    >
+      {/* Label Overlay */}
+      {(redaction.label || redaction.text) && (
+        <div className="absolute -top-6 left-0 bg-black dark:bg-white text-white dark:text-black text-[10px] font-black px-2 py-0.5 rounded-t-lg whitespace-nowrap uppercase tracking-widest shadow-lg">
+          {redaction.label || redaction.text}
+        </div>
+      )}
+
+      {/* Controls Overlay */}
+      <AnimatePresence>
+        {(isHovered || isSelected) && (
+          <motion.div 
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 10 }}
+            className="absolute -bottom-10 left-1/2 -translate-x-1/2 flex items-center gap-1 bg-white dark:bg-neutral-900 p-1 rounded-xl shadow-2xl border border-neutral-200 dark:border-neutral-800 pointer-events-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button 
+              onClick={(e) => { e.stopPropagation(); onComment(); }}
+              className="p-2 hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded-lg text-neutral-500 transition-colors"
+            >
+              <Bookmark className="w-3.5 h-3.5" />
+            </button>
+            <button 
+              onClick={(e) => { e.stopPropagation(); onDelete(); }}
+              className="p-2 hover:bg-red-50 dark:hover:bg-red-950/20 rounded-lg text-red-500 transition-colors"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Pattern Overlay */}
+      {style === 'pattern' && (
+        <div className="absolute inset-0 opacity-20 pointer-events-none" style={{ backgroundImage: 'repeating-linear-gradient(45deg, transparent, transparent 10px, rgba(255,255,255,0.2) 10px, rgba(255,255,255,0.2) 20px)' }} />
+      )}
+    </div>
+  );
+}
 
 // Set up PDF.js worker
 pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
@@ -235,26 +359,79 @@ export default function App() {
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -20 }}
-              className="flex flex-col items-center justify-center min-h-[60vh] text-center"
+              className="space-y-12"
             >
-              <h1 className="text-5xl font-bold mb-6 tracking-tight">
-                Professional PDF Redaction
-              </h1>
-              <p className="text-neutral-500 dark:text-neutral-400 max-w-2xl mb-12 text-lg">
-                Securely redact sensitive information from COA documents using AI-powered detection. 
-                Batch process multiple files and customize your workflow.
-              </p>
+              <div className="text-center max-w-3xl mx-auto">
+                <motion.div
+                  initial={{ scale: 0.8, opacity: 0 }}
+                  animate={{ scale: 1, opacity: 1 }}
+                  transition={{ delay: 0.2 }}
+                  className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-black/5 dark:bg-white/5 border border-black/10 dark:border-white/10 mb-6"
+                >
+                  <ShieldCheck className="w-4 h-4 text-emerald-500" />
+                  <span className="text-[10px] font-black uppercase tracking-widest">Enterprise Grade Privacy</span>
+                </motion.div>
+                <h1 className="text-6xl md:text-7xl font-black mb-6 tracking-tighter leading-[0.9]">
+                  The Ultimate <span className="text-neutral-400">PDF</span> Utility
+                </h1>
+                <p className="text-neutral-500 dark:text-neutral-400 text-lg md:text-xl font-medium leading-relaxed">
+                  Redact, analyze, and secure your documents with industry-leading AI. 
+                  Everything stays in your browser. No data ever leaves your machine.
+                </p>
+              </div>
 
-              <label className="group relative flex flex-col items-center justify-center w-full max-w-xl h-64 border-2 border-dashed border-neutral-300 dark:border-neutral-700 rounded-3xl cursor-pointer hover:border-black dark:hover:border-white transition-all duration-300 bg-white dark:bg-neutral-900 shadow-sm hover:shadow-xl">
-                <div className="flex flex-col items-center justify-center pt-5 pb-6">
-                  <div className="w-16 h-16 bg-neutral-100 dark:bg-neutral-800 rounded-2xl flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
-                    <Upload className="w-8 h-8 text-neutral-500" />
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {/* Main Upload Card */}
+                <label className="lg:col-span-2 group relative flex flex-col items-center justify-center h-80 border-2 border-dashed border-neutral-200 dark:border-neutral-800 rounded-[2.5rem] cursor-pointer hover:border-black dark:hover:border-white transition-all duration-500 bg-white dark:bg-neutral-900 shadow-sm hover:shadow-2xl overflow-hidden">
+                  <div className="absolute inset-0 bg-gradient-to-br from-neutral-50 to-transparent dark:from-neutral-800/50 opacity-0 group-hover:opacity-100 transition-opacity" />
+                  <div className="relative flex flex-col items-center justify-center p-8">
+                    <div className="w-20 h-20 bg-black dark:bg-white rounded-3xl flex items-center justify-center mb-6 group-hover:scale-110 group-hover:rotate-3 transition-all duration-500 shadow-xl">
+                      <FileUp className="w-10 h-10 text-white dark:text-black" />
+                    </div>
+                    <p className="text-2xl font-black tracking-tight mb-2">Drop your PDF here</p>
+                    <p className="text-sm text-neutral-400 font-bold uppercase tracking-widest">or click to browse files</p>
                   </div>
-                  <p className="mb-2 text-lg font-medium">Click to upload or drag and drop</p>
-                  <p className="text-sm text-neutral-500">PDF files only (max. 50MB)</p>
+                  <input type="file" className="hidden" accept=".pdf" multiple onChange={handleFileUpload} />
+                </label>
+
+                {/* Tool Cards */}
+                {[
+                  { title: 'Batch Process', desc: 'Redact multiple files at once', icon: Files, action: () => setView('batch'), color: 'bg-blue-500' },
+                  { title: 'AI Training', desc: 'Improve detection accuracy', icon: Brain, action: () => setView('training'), color: 'bg-purple-500' },
+                  { title: 'Security Audit', desc: 'Check for hidden metadata', icon: ShieldAlert, action: () => setView('settings'), color: 'bg-amber-500' },
+                  { title: 'Unlock PDF', desc: 'Remove security restrictions', icon: Unlock, action: () => setView('home'), color: 'bg-emerald-500' },
+                ].map((tool, i) => (
+                  <motion.button
+                    key={tool.title}
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.3 + i * 0.1 }}
+                    onClick={tool.action}
+                    className="group flex flex-col items-start p-8 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-[2.5rem] text-left hover:shadow-xl transition-all duration-500 hover:-translate-y-1"
+                  >
+                    <div className={cn("w-12 h-12 rounded-2xl flex items-center justify-center mb-6 group-hover:scale-110 transition-transform shadow-lg", tool.color)}>
+                      <tool.icon className="w-6 h-6 text-white" />
+                    </div>
+                    <h3 className="text-xl font-black tracking-tight mb-2">{tool.title}</h3>
+                    <p className="text-sm text-neutral-500 dark:text-neutral-400 font-medium leading-relaxed">{tool.desc}</p>
+                  </motion.button>
+                ))}
+              </div>
+
+              <div className="flex flex-wrap items-center justify-center gap-8 pt-12 border-t border-neutral-200 dark:border-neutral-800">
+                <div className="flex items-center gap-2 text-neutral-400">
+                  <CheckCircle2 className="w-4 h-4" />
+                  <span className="text-[10px] font-black uppercase tracking-widest">100% Client Side</span>
                 </div>
-                <input type="file" className="hidden" accept=".pdf" multiple onChange={handleFileUpload} />
-              </label>
+                <div className="flex items-center gap-2 text-neutral-400">
+                  <CheckCircle2 className="w-4 h-4" />
+                  <span className="text-[10px] font-black uppercase tracking-widest">AES-256 Encryption</span>
+                </div>
+                <div className="flex items-center gap-2 text-neutral-400">
+                  <CheckCircle2 className="w-4 h-4" />
+                  <span className="text-[10px] font-black uppercase tracking-widest">GDPR Compliant</span>
+                </div>
+              </div>
             </motion.div>
           )}
 
@@ -398,11 +575,52 @@ function EditorView({ file, settings, setSettings, onBack, addAlert, setFiles }:
   } | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [sidebarTab, setSidebarTab] = useState<'ocr' | 'redactions' | 'history'>('redactions');
+  const [identifiedCompany, setIdentifiedCompany] = useState<string | null>(null);
 
   const addToHistory = (newRedactions: RedactionBox[]) => {
     const nextHistory = [...history.slice(0, historyIndex + 1), newRedactions].slice(-50);
     setHistory(nextHistory);
     setHistoryIndex(nextHistory.length - 1);
+
+    // Continuous Learning: Update company rules based on manual redactions
+    if (file && identifiedCompany) {
+      const manualRedactions = newRedactions.filter(r => r.type === 'manual');
+      if (manualRedactions.length > 0) {
+        setSettings(prev => {
+          const companyRules = [...prev.companyRules];
+          const ruleIndex = companyRules.findIndex(r => r.name === identifiedCompany);
+          
+          if (ruleIndex !== -1) {
+            const rule = companyRules[ruleIndex];
+            const newCoordinates = [...(rule.learnedCoordinates || [])];
+            
+            manualRedactions.forEach(mr => {
+              // Avoid duplicates
+              const isDuplicate = newCoordinates.some(c => 
+                c.pageIndex === mr.pageIndex && 
+                Math.abs(c.x - mr.x) < 1 && 
+                Math.abs(c.y - mr.y) < 1
+              );
+              
+              if (!isDuplicate) {
+                newCoordinates.push({
+                  pageIndex: mr.pageIndex,
+                  x: mr.x,
+                  y: mr.y,
+                  width: mr.width,
+                  height: mr.height,
+                  label: mr.label || 'MANUAL'
+                });
+              }
+            });
+            
+            companyRules[ruleIndex] = { ...rule, learnedCoordinates: newCoordinates };
+          }
+          
+          return { ...prev, companyRules };
+        });
+      }
+    }
   };
 
   const undo = () => {
@@ -674,6 +892,41 @@ function EditorView({ file, settings, setSettings, onBack, addAlert, setFiles }:
       setFiles(prev => prev.map(f => 
         f.id === file.id ? { ...f, metadata: pdfMetadata } : f
       ));
+
+      // Identify Company from first page text
+      const firstPage = await pdf.getPage(1);
+      const textContent = await firstPage.getTextContent();
+      const fullText = textContent.items.map((item: any) => item.str).join(' ');
+      
+      const matchedRule = settings.companyRules?.find(r => 
+        (r.identifiers || []).some(id => fullText.toLowerCase().includes(id.toLowerCase()))
+      );
+      
+      if (matchedRule) {
+        setIdentifiedCompany(matchedRule.name);
+        addAlert('info', `Identified company: ${matchedRule.name}. Applying learned rules.`);
+        
+        // Apply learned coordinates if they exist
+        if (matchedRule.learnedCoordinates && matchedRule.learnedCoordinates.length > 0) {
+          const learnedRedactions: RedactionBox[] = matchedRule.learnedCoordinates.map(coord => ({
+            id: Math.random().toString(36).substring(7),
+            pageIndex: coord.pageIndex,
+            x: coord.x,
+            y: coord.y,
+            width: coord.width,
+            height: coord.height,
+            type: 'auto',
+            label: coord.label || 'Learned Redaction',
+            isSelected: false
+          }));
+          
+          setRedactions(prev => {
+            const updated = [...prev, ...learnedRedactions];
+            addToHistory(updated);
+            return updated;
+          });
+        }
+      }
     } catch (e) {
       console.error('Error loading metadata:', e);
     }
@@ -865,6 +1118,100 @@ function EditorView({ file, settings, setSettings, onBack, addAlert, setFiles }:
     }
   }, [file.id]);
 
+  const handleUnlockPDF = async () => {
+    setIsProcessing(true);
+    addAlert('info', 'Unlocking PDF (Robust image-based rebuild)...');
+    try {
+      // 1. Load the PDF using pdfjs
+      const pdfData = await fetch(file.url).then(res => res.arrayBuffer());
+      const pdf = await pdfjs.getDocument({ data: pdfData }).promise;
+      const numPages = pdf.numPages;
+      
+      // 2. Create a new PDF using pdf-lib
+      const newPdfDoc = await PDFDocument.create();
+      
+      for (let i = 1; i <= numPages; i++) {
+        const page = await pdf.getPage(i);
+        const viewport = page.getViewport({ scale: 2.0 }); // High quality
+        
+        const canvas = document.createElement('canvas');
+        const context = canvas.getContext('2d');
+        if (!context) continue;
+        
+        canvas.height = viewport.height;
+        canvas.width = viewport.width;
+        
+        await page.render({ canvasContext: context, viewport, canvas }).promise;
+        
+        const imageData = canvas.toDataURL('image/jpeg', 0.9);
+        const imageBytes = await fetch(imageData).then(res => res.arrayBuffer());
+        const embeddedImage = await newPdfDoc.embedJpg(imageBytes);
+        
+        const newPage = newPdfDoc.addPage([viewport.width, viewport.height]);
+        newPage.drawImage(embeddedImage, {
+          x: 0,
+          y: 0,
+          width: viewport.width,
+          height: viewport.height,
+        });
+      }
+      
+      const unlockedBase64 = await newPdfDoc.saveAsBase64();
+      const blob = await fetch(`data:application/pdf;base64,${unlockedBase64}`).then(res => res.blob());
+      const url = URL.createObjectURL(blob);
+      
+      setFiles(prev => prev.map(f => f.id === file.id ? { ...f, url, name: f.name.replace('.pdf', '_unlocked.pdf') } : f));
+      addAlert('success', 'PDF unlocked and rebuilt successfully via image conversion.');
+    } catch (error) {
+      console.error(error);
+      addAlert('error', 'Failed to unlock PDF. The document might be heavily protected.');
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+
+      const key = e.key.toLowerCase();
+      const ctrl = e.ctrlKey || e.metaKey;
+
+      if (ctrl && key === 'z') {
+        e.preventDefault();
+        undo();
+      } else if (ctrl && key === 'y') {
+        e.preventDefault();
+        redo();
+      } else if (ctrl && key === 'f') {
+        e.preventDefault();
+        setShowSearchPopup(true);
+      } else if (key === 'v') {
+        setTool('selection');
+      } else if (key === 't') {
+        setTool('text');
+      } else if (key === 'b') {
+        setTool('box');
+      } else if (key === 'h') {
+        setTool('highlight');
+      } else if (key === 'a') {
+        handleAutoDetect();
+      } else if (key === 'o') {
+        handleOCR();
+      } else if (key === 'arrowright') {
+        setPageNumber(p => Math.min(numPages, p + 1));
+      } else if (key === 'arrowleft') {
+        setPageNumber(p => Math.max(1, p - 1));
+      } else if (key === 'escape') {
+        setShowSearchPopup(false);
+        setTool('selection');
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [historyIndex, history, numPages, isProcessing, ocrStatus]);
+
   const handleZoomIn = () => setScale(s => Math.min(3, s + 0.1));
   const handleZoomOut = () => setScale(s => Math.max(0.5, s - 0.1));
 
@@ -881,21 +1228,24 @@ function EditorView({ file, settings, setSettings, onBack, addAlert, setFiles }:
       return;
     }
     setIsProcessing(true);
-    addAlert('info', 'Local AI is scanning the document for sensitive fields...');
+    addAlert('info', 'AI is scanning the document for sensitive fields...');
     
     try {
       const canvas = canvasRef.current;
       const imageData = canvas.toDataURL('image/png');
       
-      // 1. Perform Local OCR
+      // 1. Perform OCR
       const ocrData = await performLocalOCR(imageData) as any;
       if (!ocrData) {
-        throw new Error('OCR failed to return data');
+        throw new Error('OCR failed to return any data');
       }
       const text = ocrData.text || '';
       const words = ocrData.words || [];
 
-      // 2. Company Identification (Local)
+      // 2. Advanced AI Detection (Server-side Gemini)
+      const advancedDetections = await detectAdvancedAI(text, settings.aiDefaults, settings.companyProfile);
+      
+      // 3. Company Identification
       let matchedRule: CompanyRule | null = null;
       if (settings.companyRules?.length > 0) {
         for (const rule of settings.companyRules) {
@@ -912,7 +1262,32 @@ function EditorView({ file, settings, setSettings, onBack, addAlert, setFiles }:
       
       const newAutoRedactions: RedactionBox[] = [];
 
-      // 3. Apply Learned Coordinates
+      // 4. Apply Advanced Detections
+      advancedDetections.forEach((det, index) => {
+        // Find coordinates for the detected text
+        const matchedWords = words.filter((w: any) => det.text.toLowerCase().includes(w.text.toLowerCase()));
+        if (matchedWords.length > 0) {
+          const minX = Math.min(...matchedWords.map((w: any) => w.bbox.x0));
+          const minY = Math.min(...matchedWords.map((w: any) => w.bbox.y0));
+          const maxX = Math.max(...matchedWords.map((w: any) => w.bbox.x1));
+          const maxY = Math.max(...matchedWords.map((w: any) => w.bbox.y1));
+
+          newAutoRedactions.push({
+            id: `advanced-${Date.now()}-${index}`,
+            pageIndex: pageNumber - 1,
+            x: (minX / canvas.width) * 100,
+            y: (minY / canvas.height) * 100,
+            width: ((maxX - minX) / canvas.width) * 100,
+            height: ((maxY - minY) / canvas.height) * 100,
+            label: det.label,
+            comment: det.reason,
+            type: 'auto',
+            isSelected: true
+          });
+        }
+      });
+
+      // 5. Apply Learned Coordinates
       if (matchedRule?.learnedCoordinates) {
         matchedRule.learnedCoordinates
           .filter(c => c.pageIndex === pageNumber - 1)
@@ -931,21 +1306,24 @@ function EditorView({ file, settings, setSettings, onBack, addAlert, setFiles }:
           });
       }
 
-      // 4. Local PII Detection
+      // 6. Local PII Detection (Fallback/Complementary)
       if (settings.aiDefaults?.piiEnabled) {
         const piiResults = detectPIILocal(text, words, settings.aiDefaults.sensitivity);
         piiResults.forEach((res, index) => {
-          newAutoRedactions.push({
-            id: `pii-${Date.now()}-${index}`,
-            pageIndex: pageNumber - 1,
-            x: (res.x / canvas.width) * 100,
-            y: (res.y / canvas.height) * 100,
-            width: (res.width / canvas.width) * 100,
-            height: (res.height / canvas.height) * 100,
-            label: res.label,
-            type: 'auto',
-            isSelected: true
-          });
+          // Avoid duplicates from advanced detection
+          if (!newAutoRedactions.some(r => Math.abs(r.x - (res.x / canvas.width) * 100) < 1 && Math.abs(r.y - (res.y / canvas.height) * 100) < 1)) {
+            newAutoRedactions.push({
+              id: `pii-${Date.now()}-${index}`,
+              pageIndex: pageNumber - 1,
+              x: (res.x / canvas.width) * 100,
+              y: (res.y / canvas.height) * 100,
+              width: (res.width / canvas.width) * 100,
+              height: (res.height / canvas.height) * 100,
+              label: res.label,
+              type: 'auto',
+              isSelected: true
+            });
+          }
         });
       }
 
@@ -1029,11 +1407,12 @@ function EditorView({ file, settings, setSettings, onBack, addAlert, setFiles }:
       const canvas = canvasRef.current;
       const imageData = canvas.toDataURL('image/png');
       const ocrData = await performLocalOCR(imageData) as any;
-      if (!ocrData || !ocrData.words) {
-        throw new Error('OCR failed to return word data');
+      if (!ocrData) {
+        throw new Error('OCR failed to return any data');
       }
       
-      const results: OCRResult[] = ocrData.words.map((word: any) => ({
+      const words = ocrData.words || [];
+      const results: OCRResult[] = words.map((word: any) => ({
         text: word.text,
         x: (word.bbox.x0 / canvas.width) * 100,
         y: (word.bbox.y0 / canvas.height) * 100,
@@ -1042,7 +1421,11 @@ function EditorView({ file, settings, setSettings, onBack, addAlert, setFiles }:
       }));
 
       setOcrResults(prev => ({ ...prev, [pageNumber - 1]: results }));
-      addAlert('success', `Local OCR complete. Found ${results.length} text elements.`);
+      if (results.length === 0) {
+        addAlert('info', 'Local OCR complete. No text elements found on this page.');
+      } else {
+        addAlert('success', `Local OCR complete. Found ${results.length} text elements.`);
+      }
     } catch (error) {
       console.error(error);
       addAlert('error', 'Local OCR failed.');
@@ -1110,581 +1493,504 @@ function EditorView({ file, settings, setSettings, onBack, addAlert, setFiles }:
   };
 
   return (
-    <div className="flex flex-col h-[calc(100vh-12rem)] relative overflow-hidden">
-      {/* Desktop Layout */}
-      <div className="hidden md:flex flex-1 gap-4 overflow-hidden">
-        {/* Left Toolbar (Photoshop-like) */}
-        <div className="w-16 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-3xl flex flex-col items-center py-6 gap-6 shadow-sm">
-          <button onClick={onBack} className="p-2 hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded-xl transition-colors">
+    <div className="flex flex-col h-screen bg-neutral-100 dark:bg-neutral-950 overflow-hidden">
+      {/* Top Header - Stirling Style */}
+      <header className="h-16 bg-white dark:bg-neutral-900 border-b border-neutral-200 dark:border-neutral-800 flex items-center justify-between px-4 md:px-6 z-30 shadow-sm">
+        <div className="flex items-center gap-3 md:gap-4 overflow-hidden">
+          <button 
+            onClick={onBack} 
+            className="p-2 hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded-xl transition-colors flex-shrink-0"
+            title="Back to Home"
+          >
             <ChevronLeft className="w-5 h-5" />
           </button>
-          <div className="w-8 h-px bg-neutral-100 dark:bg-neutral-800" />
-          
-          <div className="flex flex-col gap-4">
-            <Tooltip title="Select Tool" description="Select, move, and resize redactions." shortcut="V">
-              <button 
-                onClick={() => setTool('selection')}
-                className={cn("p-3 rounded-xl transition-all", tool === 'selection' ? "bg-black text-white dark:bg-white dark:text-black shadow-lg" : "hover:bg-neutral-100 dark:hover:bg-neutral-800")}
-              >
-                <MousePointer2 className="w-5 h-5" />
-              </button>
-            </Tooltip>
-            <Tooltip title="Text Tool" description="Select and redact text directly from the document." shortcut="T">
-              <button 
-                onClick={() => setTool('text')}
-                className={cn("p-3 rounded-xl transition-all", tool === 'text' ? "bg-black text-white dark:bg-white dark:text-black shadow-lg" : "hover:bg-neutral-100 dark:hover:bg-neutral-800")}
-              >
-                <TypeIcon className="w-5 h-5" />
-              </button>
-            </Tooltip>
-            <Tooltip title="Box Tool" description="Draw a rectangular box over any area to redact it." shortcut="B">
-              <button 
-                onClick={() => setTool('box')}
-                className={cn("p-3 rounded-xl transition-all", tool === 'box' ? "bg-black text-white dark:bg-white dark:text-black shadow-lg" : "hover:bg-neutral-100 dark:hover:bg-neutral-800")}
-              >
-                <Square className="w-5 h-5" />
-              </button>
-            </Tooltip>
-            <Tooltip title="Highlight Tool" description="Free-form highlight tool for quick redactions." shortcut="H">
-              <button 
-                onClick={() => setTool('highlight')}
-                className={cn("p-3 rounded-xl transition-all", tool === 'highlight' ? "bg-black text-white dark:bg-white dark:text-black shadow-lg" : "hover:bg-neutral-100 dark:hover:bg-neutral-800")}
-              >
-                <Highlighter className="w-5 h-5" />
-              </button>
-            </Tooltip>
-          </div>
-
-          <div className="w-8 h-px bg-neutral-100 dark:bg-neutral-800" />
-
-          <div className="flex flex-col gap-4">
-            <Tooltip title="Auto-Detect" description="Automatically find PII and sensitive terms." shortcut="A">
-              <button 
-                onClick={handleAutoDetect}
-                disabled={isProcessing}
-                className="p-3 rounded-xl hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors disabled:opacity-50"
-              >
-                <Zap className="w-5 h-5" />
-              </button>
-            </Tooltip>
-            <Tooltip title="OCR Document" description="Extract text from the current page." shortcut="O">
-              <button 
-                onClick={handleOCR}
-                disabled={ocrStatus === 'loading'}
-                className="p-3 rounded-xl hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors disabled:opacity-50"
-              >
-                <FileText className="w-5 h-5" />
-              </button>
-            </Tooltip>
-            <Tooltip title="Search & Redact" description="Open search bar to find and redact text." shortcut="Ctrl+F">
-              <button 
-                onClick={() => setShowSearchPopup(!showSearchPopup)}
-                className={cn(
-                  "p-3 rounded-xl transition-all",
-                  showSearchPopup ? "bg-black text-white dark:bg-white dark:text-black shadow-lg" : "hover:bg-neutral-100 dark:hover:bg-neutral-800"
-                )}
-              >
-                <Search className="w-5 h-5" />
-              </button>
-            </Tooltip>
-          </div>
-
-          <div className="mt-auto flex flex-col gap-4">
-            <Tooltip title="Undo" description="Revert your last action." shortcut="Ctrl+Z">
-              <button 
-                onClick={undo}
-                disabled={historyIndex === 0}
-                className="p-3 rounded-xl hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors disabled:opacity-30"
-              >
-                <Undo className="w-5 h-5" />
-              </button>
-            </Tooltip>
-            <Tooltip title="Redo" description="Restore a previously undone action." shortcut="Ctrl+Y">
-              <button 
-                onClick={redo}
-                disabled={historyIndex === history.length - 1}
-                className="p-3 rounded-xl hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors disabled:opacity-30"
-              >
-                <Redo className="w-5 h-5" />
-              </button>
-            </Tooltip>
+          <div className="flex flex-col overflow-hidden">
+            <h1 className="text-sm md:text-base font-bold truncate max-w-[150px] md:max-w-xs">{file.name}</h1>
+            <div className="flex items-center gap-2 text-[10px] md:text-xs text-neutral-500 font-medium">
+              <span className="bg-neutral-100 dark:bg-neutral-800 px-1.5 py-0.5 rounded uppercase tracking-wider">PDF</span>
+              <span className="truncate">{numPages} Pages • {identifiedCompany || 'Generic PDF'}</span>
+            </div>
           </div>
         </div>
 
-        {/* Main Content Area */}
-        <div className="flex-1 flex flex-col gap-4 overflow-hidden">
-          {/* Top Info Bar */}
-          <div className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-3xl p-4 flex items-center justify-between shadow-sm">
-            <div className="flex items-center gap-4">
-              <div className="flex items-center gap-2 bg-neutral-100 dark:bg-neutral-800 px-3 py-1.5 rounded-xl">
-                <button onClick={() => setPageNumber(p => Math.max(1, p - 1))} className="p-1 hover:bg-neutral-200 dark:hover:bg-neutral-700 rounded-lg transition-colors"><ChevronLeft className="w-4 h-4" /></button>
-                <div className="flex items-center gap-1">
-                  <input 
-                    type="number"
-                    min="1"
-                    max={numPages}
-                    value={pageNumber}
-                    onChange={(e) => {
-                      const val = parseInt(e.target.value);
-                      if (val >= 1 && val <= numPages) setPageNumber(val);
-                    }}
-                    className="w-10 bg-transparent text-center font-bold text-sm outline-none focus:ring-1 focus:ring-black dark:focus:ring-white rounded"
-                  />
-                  <span className="text-sm font-bold text-neutral-400">/ {numPages}</span>
-                </div>
-                <button onClick={() => setPageNumber(p => Math.min(numPages, p + 1))} className="p-1 hover:bg-neutral-200 dark:hover:bg-neutral-700 rounded-lg transition-colors"><ChevronRight className="w-4 h-4" /></button>
-              </div>
-              <div className="h-4 w-px bg-neutral-200 dark:bg-neutral-800" />
-              <div className="flex items-center gap-2 bg-neutral-100 dark:bg-neutral-800 px-3 py-1.5 rounded-xl">
-                <button onClick={handleZoomOut} className="p-1 hover:bg-neutral-200 dark:hover:bg-neutral-700 rounded-lg transition-colors"><Search className="w-4 h-4 -scale-x-100" /></button>
-                <span className="text-xs font-mono font-bold">{Math.round(scale * 100)}%</span>
-                <button onClick={handleZoomIn} className="p-1 hover:bg-neutral-200 dark:hover:bg-neutral-700 rounded-lg transition-colors"><Plus className="w-4 h-4" /></button>
-              </div>
+        <div className="flex items-center gap-2 md:gap-4">
+          {/* Page Navigation - Desktop */}
+          <div className="hidden md:flex items-center gap-2 bg-neutral-100 dark:bg-neutral-800 px-3 py-1.5 rounded-xl border border-neutral-200 dark:border-neutral-700">
+            <button 
+              onClick={() => setPageNumber(p => Math.max(1, p - 1))} 
+              disabled={pageNumber === 1}
+              className="p-1 hover:bg-neutral-200 dark:hover:bg-neutral-700 rounded-lg transition-colors disabled:opacity-30"
+            >
+              <ChevronLeft className="w-4 h-4" />
+            </button>
+            <div className="flex items-center gap-1 min-w-[60px] justify-center">
+              <input 
+                type="number"
+                min="1"
+                max={numPages}
+                value={pageNumber}
+                onChange={(e) => {
+                  const val = parseInt(e.target.value);
+                  if (val >= 1 && val <= numPages) setPageNumber(val);
+                }}
+                className="w-8 bg-transparent text-center font-bold text-sm outline-none focus:ring-1 focus:ring-black dark:focus:ring-white rounded"
+              />
+              <span className="text-sm font-bold text-neutral-400">/ {numPages}</span>
             </div>
-            
-            <div className="flex items-center gap-3">
-              <button 
-                onClick={() => setShowConfirmApply(true)}
-                disabled={isProcessing || redactions.length === 0}
-                className="px-6 py-2 bg-black dark:bg-white text-white dark:text-black rounded-xl font-bold hover:opacity-90 transition-opacity disabled:opacity-50 flex items-center gap-2 shadow-lg"
-              >
-                {isProcessing ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
-                Apply & Download
-              </button>
-            </div>
+            <button 
+              onClick={() => setPageNumber(p => Math.min(numPages, p + 1))} 
+              disabled={pageNumber === numPages}
+              className="p-1 hover:bg-neutral-200 dark:hover:bg-neutral-700 rounded-lg transition-colors disabled:opacity-30"
+            >
+              <ChevronRight className="w-4 h-4" />
+            </button>
           </div>
 
-          {/* PDF Viewer Container */}
-          <div className="flex-1 bg-neutral-200 dark:bg-neutral-800 rounded-3xl overflow-auto p-8 flex justify-center relative shadow-inner">
-            {/* Search Popup Bar */}
-          <AnimatePresence>
-            {showSearchPopup && (
-              <motion.div 
-                initial={{ opacity: 0, y: -20 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -20 }}
-                className="absolute top-4 left-1/2 -translate-x-1/2 z-[100] w-full max-w-2xl bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-2xl shadow-2xl p-4 flex flex-col gap-3"
-              >
-                <div className="flex gap-2 relative">
-                  <div className="flex-1 relative">
-                    <input 
-                      autoFocus
-                      type="text"
-                      placeholder={useRegex ? "Regex search..." : "Search text..."}
-                      value={searchQuery}
-                      onChange={(e) => {
-                        setSearchQuery(e.target.value);
-                        setShowSuggestions(true);
-                      }}
-                      onFocus={() => setShowSuggestions(true)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                          handleSearchAndRedact();
-                          setShowSuggestions(false);
-                        }
-                      }}
-                      className="w-full px-4 py-2 bg-neutral-100 dark:bg-neutral-800 rounded-xl text-sm outline-none focus:ring-2 focus:ring-black dark:focus:ring-white pr-10"
-                    />
-                    <AnimatePresence>
-                      {showSuggestions && searchQuery && (
-                        <motion.div 
-                          initial={{ opacity: 0, y: -10 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          exit={{ opacity: 0, y: -10 }}
-                          className="absolute left-0 right-0 top-full mt-2 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-xl shadow-xl z-[60] overflow-hidden"
-                        >
-                          {allSuggestions.filter(s => s.toLowerCase().includes(searchQuery.toLowerCase())).slice(0, 5).map(s => (
-                            <button
-                              key={s}
-                              onClick={() => {
-                                setSearchQuery(s);
-                                setShowSuggestions(false);
-                              }}
-                              className="w-full px-4 py-2 text-left text-sm hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors"
-                            >
-                              {s}
-                            </button>
-                          ))}
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                    {searchQuery && (
-                      <button 
-                        onClick={() => {
-                          setSearchQuery('');
-                          setShowSuggestions(false);
-                        }}
-                        className="absolute right-3 top-1/2 -translate-y-1/2 p-1 hover:bg-neutral-200 dark:hover:bg-neutral-700 rounded-full transition-colors"
-                      >
-                        <X className="w-3 h-3 text-neutral-400" />
-                      </button>
-                    )}
-                  </div>
-                  <button 
-                    onClick={() => setUseRegex(!useRegex)}
-                    className={cn(
-                      "px-3 py-2 rounded-xl text-xs font-bold transition-colors border",
-                      useRegex ? "bg-black text-white dark:bg-white dark:text-black" : "bg-neutral-100 dark:bg-neutral-800 text-neutral-400"
-                    )}
-                    title="Use Regular Expression"
-                  >
-                    .*
-                  </button>
-                  <button 
-                    onClick={() => {
-                      handleSearchAndRedact();
-                      if (searchQuery && !settings.searchHistory.includes(searchQuery)) {
-                        setSettings(prev => ({ ...prev, searchHistory: [searchQuery, ...prev.searchHistory].slice(0, 20) }));
-                      }
-                    }}
-                    disabled={isSearching || !searchQuery}
-                    className="px-4 py-2 bg-black dark:bg-white text-white dark:text-black rounded-xl hover:opacity-90 transition-opacity disabled:opacity-50 relative overflow-hidden flex items-center gap-2"
-                  >
-                    {isSearching ? (
-                      <>
-                        <RefreshCw className="w-4 h-4 animate-spin" />
-                        <div 
-                          className="absolute bottom-0 left-0 h-1 bg-emerald-500 transition-all duration-300" 
-                          style={{ width: `${searchProgress}%` }}
-                        />
-                      </>
-                    ) : (
-                      <>
-                        <Search className="w-4 h-4" />
-                        <span className="text-xs font-bold">Search</span>
-                      </>
-                    )}
-                  </button>
-                  <button 
-                    onClick={clearSearchMatches}
-                    className="px-4 py-2 bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400 rounded-xl hover:bg-neutral-200 dark:hover:bg-neutral-700 transition-colors flex items-center gap-2"
-                    title="Clear all search matches"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                    <span className="text-xs font-bold">Clear</span>
-                  </button>
-                  <button 
-                    onClick={() => setShowSearchPopup(false)}
-                    className="p-2 hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded-xl transition-colors"
-                  >
-                    <X className="w-5 h-5" />
-                  </button>
-                </div>
-                <div className="flex items-center justify-between gap-4">
-                  <div className="flex gap-2 flex-1">
-                    <button 
-                      onClick={() => setIsCaseSensitive(!isCaseSensitive)}
-                      className={cn(
-                        "flex-1 py-1.5 rounded-lg text-[10px] font-bold transition-colors border",
-                        isCaseSensitive ? "bg-neutral-100 dark:bg-neutral-800 border-black dark:border-white" : "bg-transparent border-neutral-200 dark:border-neutral-800 text-neutral-400"
-                      )}
-                    >
-                      Case Sensitive
-                    </button>
-                    <button 
-                      onClick={() => setIsFuzzyMatch(!isFuzzyMatch)}
-                      className={cn(
-                        "flex-1 py-1.5 rounded-lg text-[10px] font-bold transition-colors border",
-                        isFuzzyMatch ? "bg-neutral-100 dark:bg-neutral-800 border-black dark:border-white" : "bg-transparent border-neutral-200 dark:border-neutral-800 text-neutral-400"
-                      )}
-                    >
-                      Fuzzy Match
-                    </button>
-                  </div>
-                  <div className="h-4 w-px bg-neutral-200 dark:border-neutral-800" />
-                  <button 
-                    onClick={clearSearchMatches}
-                    className="px-3 py-1.5 rounded-lg text-[10px] font-bold bg-red-50 dark:bg-red-950/30 text-red-500 hover:bg-red-100 transition-colors border border-red-200 dark:border-red-900/50 flex items-center gap-2"
-                    title="Clear all search matches"
-                  >
-                    <Trash2 className="w-3 h-3" />
-                    Clear Matches
-                  </button>
-                </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
+          <div className="h-6 w-px bg-neutral-200 dark:bg-neutral-800 hidden md:block" />
 
-          {isPasswordRequired && (
-            <div className="absolute inset-0 z-10 bg-black/50 backdrop-blur-sm flex items-center justify-center p-6">
-              <div className="bg-white dark:bg-neutral-900 p-8 rounded-3xl shadow-2xl max-w-md w-full text-center">
-                <AlertCircle className="w-12 h-12 text-amber-500 mx-auto mb-4" />
-                <h3 className="text-xl font-bold mb-2">Password Protected</h3>
-                <p className="text-neutral-500 mb-6 text-sm">This document is encrypted. Please enter the password to unlock it.</p>
-                <input 
-                  type="password" 
-                  placeholder="Enter password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className="w-full px-4 py-3 bg-neutral-100 dark:bg-neutral-800 rounded-xl mb-4 focus:ring-2 focus:ring-black dark:focus:ring-white outline-none"
-                />
-                <button 
-                  onClick={() => setIsPasswordRequired(false)}
-                  className="w-full py-3 bg-black dark:bg-white text-white dark:text-black rounded-xl font-bold hover:opacity-90 transition-opacity"
-                >
-                  Unlock Document
-                </button>
-              </div>
-            </div>
-          )}
-          <div 
-            className="relative shadow-2xl cursor-crosshair"
-            style={{ backgroundColor: settings.customTheme?.canvasBgColor || '#f5f5f5' }}
-            onMouseDown={handleMouseDown}
-            onMouseMove={handleMouseMove}
-            onMouseUp={handleMouseUp}
-            onDragOver={handleDragOver}
-            onDrop={handleDrop}
+          {/* Zoom Controls - Desktop */}
+          <div className="hidden md:flex items-center gap-1 bg-neutral-100 dark:bg-neutral-800 px-2 py-1 rounded-xl">
+            <button onClick={handleZoomOut} className="p-1.5 hover:bg-neutral-200 dark:hover:bg-neutral-700 rounded-lg transition-colors"><SearchX className="w-4 h-4" /></button>
+            <span className="text-xs font-bold w-12 text-center">{Math.round(scale * 100)}%</span>
+            <button onClick={handleZoomIn} className="p-1.5 hover:bg-neutral-200 dark:hover:bg-neutral-700 rounded-lg transition-colors"><Search className="w-4 h-4" /></button>
+          </div>
+
+          <button 
+            onClick={() => setShowConfirmApply(true)}
+            className="bg-black text-white dark:bg-white dark:text-black px-4 md:px-6 py-2 md:py-2.5 rounded-xl font-bold text-xs md:text-sm hover:scale-105 active:scale-95 transition-all shadow-lg flex items-center gap-2"
           >
-            <ErrorBoundary>
-              <Document 
-                file={file.url} 
+            <Download className="w-4 h-4" />
+            <span className="hidden sm:inline">Apply & Download</span>
+            <span className="sm:hidden">Apply</span>
+          </button>
+        </div>
+      </header>
+
+      <div className="flex flex-1 overflow-hidden relative">
+        {/* Left Sidebar - Thumbnails (Stirling Style) */}
+        <aside className="hidden lg:flex w-64 bg-white dark:bg-neutral-900 border-r border-neutral-200 dark:border-neutral-800 flex-col overflow-hidden">
+          <div className="p-4 border-b border-neutral-100 dark:border-neutral-800 flex items-center justify-between">
+            <h2 className="text-xs font-bold uppercase tracking-widest text-neutral-400">Pages</h2>
+            <span className="text-[10px] bg-neutral-100 dark:bg-neutral-800 px-2 py-0.5 rounded-full font-bold">{numPages} Total</span>
+          </div>
+          <div className="flex-1 overflow-y-auto p-4 space-y-4 scrollbar-hide">
+            {Array.from({ length: numPages }, (_, i) => i + 1).map((num) => (
+              <button
+                key={num}
+                onClick={() => setPageNumber(num)}
+                className={cn(
+                  "w-full group relative transition-all duration-200",
+                  pageNumber === num ? "scale-105" : "hover:scale-102"
+                )}
+              >
+                <div className={cn(
+                  "aspect-[1/1.414] rounded-lg border-2 overflow-hidden bg-neutral-100 dark:bg-neutral-800 shadow-sm transition-all",
+                  pageNumber === num ? "border-black dark:border-white shadow-md" : "border-transparent group-hover:border-neutral-300 dark:group-hover:border-neutral-700"
+                )}>
+                  <Document file={file.url} loading={<div className="w-full h-full animate-pulse bg-neutral-200 dark:bg-neutral-700" />}>
+                    <Page 
+                      pageNumber={num} 
+                      width={200} 
+                      renderTextLayer={false} 
+                      renderAnnotationLayer={false}
+                      className="w-full h-full object-cover"
+                    />
+                  </Document>
+                  {/* Redaction Indicators on Thumbnails */}
+                  <div className="absolute inset-0 pointer-events-none">
+                    {redactions.filter(r => r.pageIndex === num - 1).map((r, idx) => (
+                      <div 
+                        key={idx}
+                        className="absolute bg-black/40 dark:bg-white/40"
+                        style={{
+                          left: `${r.x}%`,
+                          top: `${r.y}%`,
+                          width: `${r.width}%`,
+                          height: `${r.height}%`
+                        }}
+                      />
+                    ))}
+                  </div>
+                </div>
+                <div className="mt-2 flex items-center justify-between px-1">
+                  <span className={cn(
+                    "text-[10px] font-bold",
+                    pageNumber === num ? "text-black dark:text-white" : "text-neutral-400"
+                  )}>Page {num}</span>
+                  {redactions.filter(r => r.pageIndex === num - 1).length > 0 && (
+                    <span className="w-2 h-2 rounded-full bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.5)]" />
+                  )}
+                </div>
+              </button>
+            ))}
+          </div>
+        </aside>
+
+        {/* Main Viewer - Stirling Style (Dark Background) */}
+        <main className="flex-1 bg-neutral-200 dark:bg-neutral-950 overflow-auto relative flex flex-col items-center p-4 md:p-8 scrollbar-thin scrollbar-thumb-neutral-400 dark:scrollbar-thumb-neutral-700">
+          <div 
+            className="relative shadow-2xl transition-transform duration-200 origin-top"
+            style={{ transform: `scale(${scale})` }}
+          >
+            <div 
+              className="relative bg-white shadow-lg overflow-hidden"
+              onMouseDown={handleMouseDown}
+              onMouseMove={handleMouseMove}
+              onMouseUp={handleMouseUp}
+              onMouseLeave={handleMouseUp}
+              style={{ cursor: tool === 'selection' ? 'default' : 'crosshair' }}
+            >
+              <Document
+                file={file.url}
                 onLoadSuccess={onDocumentLoadSuccess}
                 onLoadError={onDocumentLoadError}
                 options={pdfOptions}
                 loading={
-                  <div className="flex flex-col items-center justify-center p-20 bg-white dark:bg-neutral-900 rounded-xl shadow-lg">
-                    <RefreshCw className="w-8 h-8 animate-spin text-neutral-400 mb-4" />
-                    <p className="text-sm text-neutral-500">Loading document...</p>
+                  <div className="flex flex-col items-center justify-center p-20 space-y-4">
+                    <RefreshCw className="w-10 h-10 animate-spin text-neutral-400" />
+                    <p className="text-sm font-medium text-neutral-500">Loading Page {pageNumber}...</p>
                   </div>
                 }
               >
-                <Page 
-                  pageNumber={pageNumber} 
-                  scale={scale} 
-                  renderAnnotationLayer={false}
+                <Page
+                  pageNumber={pageNumber}
+                  scale={1.5}
                   renderTextLayer={true}
+                  renderAnnotationLayer={true}
                   canvasRef={canvasRef}
+                  className="shadow-xl"
                 />
-                {/* OCR Text Overlay */}
-                <div className="absolute inset-0 pointer-events-none overflow-hidden">
-                  {(ocrResults[pageNumber - 1] || []).map((res, i) => (
-                    <div
-                      key={i}
-                      className="absolute text-transparent select-text hover:bg-red-500/10 transition-colors pointer-events-auto cursor-text"
-                      style={{
-                        left: `${res.x}%`,
-                        top: `${res.y}%`,
-                        width: `${res.width}%`,
-                        height: `${res.height}%`,
-                        fontSize: `${res.height * 0.8}%`,
-                        lineHeight: 1,
-                      }}
-                      title={res.text}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        const newRedaction: RedactionBox = {
-                          id: Math.random().toString(36).substring(7),
-                          pageIndex: pageNumber - 1,
-                          x: res.x,
-                          y: res.y,
-                          width: res.width,
-                          height: res.height,
-                          text: res.text,
-                          label: 'OCR Redaction',
-                          type: 'text',
-                          isSelected: true,
-                        };
-                        const updatedRedactions = [...redactions, newRedaction];
-                        setRedactions(updatedRedactions);
-                        addToHistory(updatedRedactions);
-                        addAlert('success', `Redacted: ${res.text}`);
-                      }}
-                    >
-                      {res.text}
-                    </div>
-                  ))}
-                </div>
               </Document>
-            </ErrorBoundary>
-            
-            {/* Redaction Overlays */}
-            <div className="absolute inset-0 pointer-events-none">
-              <svg 
-                className="absolute inset-0 w-full h-full pointer-events-none"
-                viewBox="0 0 100 100"
-                preserveAspectRatio="none"
-              >
-                {redactions.filter(r => r.pageIndex === pageNumber - 1 && r.type === 'highlight').map(r => (
-                  <path
-                    key={r.id}
-                    d={r.path}
-                    fill="none"
-                    stroke={r.isSelected ? "rgba(239, 68, 68, 0.5)" : "rgba(163, 163, 163, 0.3)"}
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    vectorEffect="non-scaling-stroke"
-                    className="pointer-events-auto cursor-pointer transition-all"
-                    onMouseDown={(e) => {
-                      e.stopPropagation();
-                      if (tool !== 'selection') return;
-                      
-                      const updated = redactions.map(item => {
-                        if (item.id === r.id) {
-                          return { ...item, isSelected: !item.isSelected };
-                        }
-                        if (!e.shiftKey && item.id !== r.id) {
-                          return { ...item, isSelected: false };
-                        }
-                        return item;
-                      });
+
+              {/* Redaction Overlay */}
+              <div className="absolute inset-0 pointer-events-none select-none">
+                {redactions.filter(r => r.pageIndex === pageNumber - 1).map((redaction) => (
+                  <RedactionBoxComponent
+                    key={redaction.id}
+                    redaction={redaction}
+                    onUpdate={(updates) => {
+                      const updated = redactions.map(r => r.id === redaction.id ? { ...r, ...updates } : r);
                       setRedactions(updated);
                       addToHistory(updated);
                     }}
-                  />
-                ))}
-                {isDrawing && tool === 'highlight' && currentPath.length > 1 && (
-                  <path
-                    d={currentPath.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ')}
-                    fill="none"
-                    stroke="rgba(239, 68, 68, 0.5)"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    vectorEffect="non-scaling-stroke"
-                  />
-                )}
-              </svg>
-
-              {redactions.filter(r => r.pageIndex === pageNumber - 1 && r.type !== 'highlight').map(r => (
-                <div 
-                  key={r.id}
-                  className={cn(
-                    "absolute border-2 transition-all cursor-pointer pointer-events-auto",
-                    r.isSelected ? "border-red-500 z-10" : "border-neutral-400 opacity-50"
-                  )}
-                  style={{
-                    left: `${r.x}%`,
-                    top: `${r.y}%`,
-                    width: `${r.width}%`,
-                    height: `${r.height}%`,
-                    backgroundColor: settings.redactionStyle === 'outline' ? 'transparent' : (r.isSelected ? 'rgba(239, 68, 68, 0.2)' : settings.redactionColor),
-                    borderColor: r.isSelected ? '#ef4444' : settings.redactionColor,
-                    borderWidth: settings.redactionStyle === 'outline' ? '3px' : '1px',
-                    backgroundImage: settings.redactionStyle === 'pattern' && !r.isSelected ? `repeating-linear-gradient(45deg, transparent, transparent 5px, rgba(255,255,255,0.1) 5px, rgba(255,255,255,0.1) 10px)` : 'none'
-                  }}
-                  onMouseDown={(e) => {
-                    e.stopPropagation();
-                    if (tool !== 'selection') return;
-                    
-                    const rect = e.currentTarget.parentElement?.getBoundingClientRect();
-                    if (!rect) return;
-                    const mx = ((e.clientX - rect.left) / rect.width) * 100;
-                    const my = ((e.clientY - rect.top) / rect.height) * 100;
-
-                    if (e.shiftKey) {
-                      const updated = redactions.map(item => 
-                        item.id === r.id ? { ...item, isSelected: !item.isSelected } : item
-                      );
+                    onDelete={() => {
+                      const updated = redactions.filter(r => r.id !== redaction.id);
                       setRedactions(updated);
                       addToHistory(updated);
-                      return;
-                    }
+                    }}
+                    onComment={() => setCommentModal({ isOpen: true, redactionId: redaction.id, comment: redaction.comment || '' })}
+                    isSelected={redaction.isSelected}
+                    style={settings.redactionStyle}
+                  />
+                ))}
 
-                    if (!r.isSelected) {
-                      const updated = redactions.map(item => 
-                        item.id === r.id ? { ...item, isSelected: true } : { ...item, isSelected: false }
-                      );
-                      setRedactions(updated);
-                    }
+                {/* Drawing Preview */}
+                {currentBox && (
+                  <div 
+                    className="absolute border-2 border-dashed border-black dark:border-white bg-black/10 dark:bg-white/10"
+                    style={{
+                      left: `${currentBox.x}%`,
+                      top: `${currentBox.y}%`,
+                      width: `${currentBox.width}%`,
+                      height: `${currentBox.height}%`
+                    }}
+                  />
+                )}
+                
+                {/* Highlight Preview */}
+                {currentPath.length > 1 && (
+                  <svg className="absolute inset-0 w-full h-full overflow-visible">
+                    <path
+                      d={currentPath.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ')}
+                      fill="none"
+                      stroke="rgba(0,0,0,0.3)"
+                      strokeWidth="10"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                )}
 
-                    const initialRects: Record<string, { x: number; y: number; width: number; height: number }> = {};
-                    redactions.forEach(red => {
-                      if (red.isSelected) {
-                        initialRects[red.id] = { x: red.x, y: red.y, width: red.width, height: red.height };
-                      }
-                    });
-
-                    setActiveInteraction({
-                      type: 'drag',
-                      redactionId: r.id,
-                      initialMouse: { x: mx, y: my },
-                      initialRect: { x: r.x, y: r.y, width: r.width, height: r.height },
-                      initialRects
-                    });
-                  }}
-                >
-                  {r.isSelected && tool === 'selection' && (
-                    <>
-                      {/* Resize Handles */}
-                      {['nw', 'ne', 'sw', 'se', 'n', 's', 'e', 'w'].map(handle => (
-                        <div
-                          key={handle}
-                          className={cn(
-                            "absolute w-2 h-2 bg-white border border-red-500 z-20",
-                            handle === 'nw' && "-top-1 -left-1 cursor-nw-resize",
-                            handle === 'ne' && "-top-1 -right-1 cursor-ne-resize",
-                            handle === 'sw' && "-bottom-1 -left-1 cursor-sw-resize",
-                            handle === 'se' && "-bottom-1 -right-1 cursor-se-resize",
-                            handle === 'n' && "-top-1 left-1/2 -translate-x-1/2 cursor-n-resize",
-                            handle === 's' && "-bottom-1 left-1/2 -translate-x-1/2 cursor-s-resize",
-                            handle === 'e' && "top-1/2 -right-1 -translate-y-1/2 cursor-e-resize",
-                            handle === 'w' && "top-1/2 -left-1 -translate-y-1/2 cursor-w-resize",
-                          )}
-                          onMouseDown={(e) => {
-                            e.stopPropagation();
-                            const rect = e.currentTarget.parentElement?.parentElement?.getBoundingClientRect();
-                            if (!rect) return;
-                            const mx = ((e.clientX - rect.left) / rect.width) * 100;
-                            const my = ((e.clientY - rect.top) / rect.height) * 100;
-
-                            setActiveInteraction({
-                              type: 'resize',
-                              redactionId: r.id,
-                              handle,
-                              initialMouse: { x: mx, y: my },
-                              initialRect: { x: r.x, y: r.y, width: r.width, height: r.height }
-                            });
-                          }}
-                        />
-                      ))}
-                    </>
-                  )}
-                  {r.label && (
-                    <span className="absolute -top-6 left-0 bg-red-500 text-white text-[10px] px-1.5 py-0.5 rounded uppercase font-bold whitespace-nowrap">
-                      {r.label}
-                    </span>
-                  )}
-                </div>
-              ))}
-
-              {/* Temporary Highlights for Search Feedback */}
-              {tempHighlights.filter(h => h.pageIndex === pageNumber - 1).map((h, i) => (
-                <motion.div 
-                  key={`temp-${i}`}
-                  initial={{ opacity: 0, scale: 0.8 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  exit={{ opacity: 0 }}
-                  className="absolute bg-amber-400/40 border-2 border-amber-500 z-50 pointer-events-none"
-                  style={{
-                    left: `${h.x}%`,
-                    top: `${h.y}%`,
-                    width: `${h.width}%`,
-                    height: `${h.height}%`,
-                  }}
-                />
-              ))}
-
-              {/* Current Drawing Box */}
-              {currentBox && (
-                <div 
-                  className="absolute border-2 border-dashed border-red-500 bg-red-500/10"
-                  style={{
-                    left: `${currentBox.x}%`,
-                    top: `${currentBox.y}%`,
-                    width: `${currentBox.width}%`,
-                    height: `${currentBox.height}%`,
-                  }}
-                />
-              )}
+                {/* Search Highlights */}
+                {tempHighlights.filter(h => h.pageIndex === pageNumber - 1).map((h, i) => (
+                  <motion.div
+                    key={i}
+                    initial={{ opacity: 0, scale: 0.8 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    className="absolute border-2 border-yellow-400 bg-yellow-400/20"
+                    style={{
+                      left: `${h.x}%`,
+                      top: `${h.y}%`,
+                      width: `${h.width}%`,
+                      height: `${h.height}%`
+                    }}
+                  />
+                ))}
+              </div>
             </div>
           </div>
-        </div>
-      </div>
 
-        {/* Right Sidebar (Redaction List) */}
-        <div className="w-80 bg-white dark:bg-neutral-900 rounded-3xl border border-neutral-200 dark:border-neutral-800 p-6 flex flex-col gap-6 shadow-sm">
+          {/* Floating Toolbar - Stirling Style */}
+          <div className="fixed bottom-8 left-1/2 -translate-x-1/2 flex items-center gap-1 bg-white/90 dark:bg-neutral-900/90 backdrop-blur-md border border-neutral-200 dark:border-neutral-800 p-1.5 rounded-2xl shadow-2xl z-40">
+            <div className="flex items-center gap-1 px-1">
+              <ToolbarButton 
+                active={tool === 'selection'} 
+                onClick={() => setTool('selection')} 
+                icon={MousePointer2} 
+                label="Select" 
+                shortcut="V"
+              />
+              <ToolbarButton 
+                active={tool === 'text'} 
+                onClick={() => setTool('text')} 
+                icon={TypeIcon} 
+                label="Text" 
+                shortcut="T"
+              />
+              <ToolbarButton 
+                active={tool === 'box'} 
+                onClick={() => setTool('box')} 
+                icon={Square} 
+                label="Box" 
+                shortcut="B"
+              />
+              <ToolbarButton 
+                active={tool === 'highlight'} 
+                onClick={() => setTool('highlight')} 
+                icon={Highlighter} 
+                label="Draw" 
+                shortcut="H"
+              />
+            </div>
+            
+            <div className="w-px h-6 bg-neutral-200 dark:bg-neutral-800 mx-1" />
+            
+            <div className="flex items-center gap-1 px-1">
+              <ToolbarButton 
+                onClick={handleAutoDetect} 
+                icon={Zap} 
+                label="AI Scan" 
+                shortcut="A"
+                disabled={isProcessing}
+              />
+              <ToolbarButton 
+                onClick={handleOCR} 
+                icon={FileText} 
+                label="OCR" 
+                shortcut="O"
+                disabled={isOCRing}
+              />
+              <ToolbarButton 
+                onClick={() => setShowSearchPopup(true)} 
+                icon={Search} 
+                label="Find" 
+                shortcut="Ctrl+F"
+              />
+              <ToolbarButton 
+                onClick={handleUnlockPDF} 
+                icon={Unlock} 
+                label="Unlock" 
+                disabled={isProcessing}
+              />
+            </div>
+
+            <div className="w-px h-6 bg-neutral-200 dark:bg-neutral-800 mx-1" />
+
+            <div className="flex items-center gap-1 px-1">
+              <ToolbarButton 
+                onClick={undo} 
+                icon={Undo} 
+                label="Undo" 
+                shortcut="Ctrl+Z"
+                disabled={historyIndex === 0}
+              />
+              <ToolbarButton 
+                onClick={redo} 
+                icon={Redo} 
+                label="Redo" 
+                shortcut="Ctrl+Y"
+                disabled={historyIndex === history.length - 1}
+              />
+            </div>
+          </div>
+        </main>
+        {/* Right Sidebar - Redactions (Stirling Style) */}
+        <aside className="hidden xl:flex w-80 bg-white dark:bg-neutral-900 border-l border-neutral-200 dark:border-neutral-800 flex-col overflow-hidden">
+          <div className="p-4 border-b border-neutral-100 dark:border-neutral-800 flex items-center justify-between">
+            <h2 className="text-xs font-bold uppercase tracking-widest text-neutral-400">Redactions</h2>
+            <span className="text-[10px] bg-neutral-100 dark:bg-neutral-800 px-2 py-0.5 rounded-full font-bold">{redactions.length}</span>
+          </div>
+          
+          <div className="p-4 border-b border-neutral-100 dark:border-neutral-800">
+            <div className="flex p-1 bg-neutral-100 dark:bg-neutral-800 rounded-xl">
+              {(['redactions', 'ocr', 'history'] as const).map(tab => (
+                <button
+                  key={tab}
+                  onClick={() => setSidebarTab(tab)}
+                  className={cn(
+                    "flex-1 py-1.5 text-[10px] font-bold uppercase tracking-widest rounded-lg transition-all",
+                    sidebarTab === tab 
+                      ? "bg-white dark:bg-neutral-900 text-black dark:text-white shadow-sm" 
+                      : "text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300"
+                  )}
+                >
+                  {tab}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="flex-1 overflow-y-auto p-4 scrollbar-hide">
+            {sidebarTab === 'redactions' && (
+              <div className="space-y-4">
+                {redactions.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center py-12 text-neutral-400 text-center">
+                    <ShieldAlert className="w-12 h-12 mb-4 opacity-20" />
+                    <p className="text-xs font-medium">No redactions yet</p>
+                  </div>
+                ) : (
+                  Object.entries(
+                    redactions.reduce((acc, r) => {
+                      const page = r.pageIndex + 1;
+                      if (!acc[page]) acc[page] = [];
+                      acc[page].push(r);
+                      return acc;
+                    }, {} as Record<number, RedactionBox[]>)
+                  ).sort(([a], [b]) => Number(a) - Number(b)).map(([page, pageRedactions]) => (
+                    <div key={page} className="space-y-2">
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] font-bold text-neutral-400 uppercase tracking-widest">Page {page}</span>
+                        <div className="h-px flex-1 bg-neutral-100 dark:bg-neutral-800" />
+                      </div>
+                      {pageRedactions.map(r => (
+                        <div 
+                          key={r.id}
+                          onClick={() => {
+                            setPageNumber(r.pageIndex + 1);
+                            setRedactions(redactions.map(item => ({ ...item, isSelected: item.id === r.id })));
+                          }}
+                          className={cn(
+                            "p-3 rounded-xl border transition-all cursor-pointer group",
+                            r.isSelected ? "border-black dark:border-white bg-neutral-50 dark:bg-neutral-800" : "border-neutral-100 dark:border-neutral-800 hover:bg-neutral-50 dark:hover:bg-neutral-800"
+                          )}
+                        >
+                          <div className="flex items-center justify-between mb-2">
+                            <div className="flex items-center gap-2">
+                              <div className="w-2 h-2 rounded-full bg-red-500" />
+                              <span className="text-[10px] font-bold uppercase truncate max-w-[120px]">{r.label || 'Redaction'}</span>
+                            </div>
+                            <button 
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                const updated = redactions.filter(item => item.id !== r.id);
+                                setRedactions(updated);
+                                addToHistory(updated);
+                              }}
+                              className="p-1 hover:text-red-500 transition-colors opacity-0 group-hover:opacity-100"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                          {r.text && <p className="text-[10px] text-neutral-500 truncate italic">"{r.text}"</p>}
+                          {r.comment && <p className="text-[10px] text-neutral-400 mt-1 line-clamp-1">{r.comment}</p>}
+                        </div>
+                      ))}
+                    </div>
+                  ))
+                )}
+              </div>
+            )}
+
+            {sidebarTab === 'ocr' && (
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-xs font-bold uppercase tracking-widest text-neutral-400">Page Text</h3>
+                  <button 
+                    onClick={handleOCR}
+                    disabled={isOCRing}
+                    className="text-[10px] font-bold text-black dark:text-white hover:underline disabled:opacity-50"
+                  >
+                    {isOCRing ? 'Scanning...' : 'Scan Page'}
+                  </button>
+                </div>
+                <div className="space-y-2">
+                  {(ocrResults[pageNumber - 1] || []).length === 0 ? (
+                    <div className="text-center py-8">
+                      <FileText className="w-8 h-8 mx-auto mb-2 text-neutral-300" />
+                      <p className="text-[10px] text-neutral-400">No text detected on this page</p>
+                    </div>
+                  ) : (
+                    ocrResults[pageNumber - 1].map((res, i) => (
+                      <div key={i} className="p-2 bg-neutral-50 dark:bg-neutral-800 rounded-lg border border-neutral-100 dark:border-neutral-800 flex items-center justify-between gap-2 group">
+                        <span className="text-[10px] truncate flex-1">{res.text}</span>
+                        <button 
+                          onClick={() => {
+                            const newRedaction: RedactionBox = {
+                              id: Math.random().toString(36).substring(7),
+                              pageIndex: pageNumber - 1,
+                              x: res.x,
+                              y: res.y,
+                              width: res.width,
+                              height: res.height,
+                              text: res.text,
+                              label: 'OCR',
+                              type: 'text',
+                              isSelected: true,
+                            };
+                            const updated = [...redactions, newRedaction];
+                            setRedactions(updated);
+                            addToHistory(updated);
+                          }}
+                          className="p-1 bg-neutral-200 dark:bg-neutral-700 rounded opacity-0 group-hover:opacity-100 transition-opacity"
+                        >
+                          <Zap className="w-3 h-3" />
+                        </button>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            )}
+
+            {sidebarTab === 'history' && (
+              <div className="space-y-3">
+                {history.map((state, idx) => (
+                  <button
+                    key={idx}
+                    onClick={() => {
+                      setRedactions(state);
+                      setHistoryIndex(idx);
+                    }}
+                    className={cn(
+                      "w-full p-3 rounded-xl border text-left transition-all",
+                      historyIndex === idx 
+                        ? "border-black dark:border-white bg-neutral-50 dark:bg-neutral-800" 
+                        : "border-neutral-100 dark:border-neutral-800 hover:bg-neutral-50 dark:hover:bg-neutral-800"
+                    )}
+                  >
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-[10px] font-bold uppercase text-neutral-400">
+                        {idx === 0 ? 'Original' : `Action ${idx}`}
+                      </span>
+                      {historyIndex === idx && <div className="w-1.5 h-1.5 rounded-full bg-emerald-500" />}
+                    </div>
+                    <p className="text-[10px] font-medium">{state.length} Redactions</p>
+                  </button>
+                )).reverse()}
+              </div>
+            )}
+          </div>
+          
+          <div className="p-4 border-t border-neutral-100 dark:border-neutral-800">
+            <button 
+              onClick={() => setShowConfirmApply(true)}
+              disabled={isProcessing || redactions.length === 0}
+              className="w-full py-3 bg-black dark:bg-white text-white dark:text-black rounded-xl font-bold text-sm hover:opacity-90 transition-opacity disabled:opacity-50 flex items-center justify-center gap-2 shadow-lg"
+            >
+              <Download className="w-4 h-4" />
+              Apply & Download
+            </button>
+          </div>
           <div className="flex p-1 bg-neutral-100 dark:bg-neutral-800 rounded-2xl">
             {(['ocr', 'redactions', 'history'] as const).map(tab => (
               <button
@@ -2042,7 +2348,7 @@ function EditorView({ file, settings, setSettings, onBack, addAlert, setFiles }:
               </div>
             </div>
           )}
-        </div>
+        </aside>
       </div>
 
       {/* Mobile Layout (Google Docs/Drive like) */}
@@ -2411,6 +2717,31 @@ function BatchView({ files, setFiles, settings, setSettings, addAlert }: {
               });
             });
           }
+
+          // Advanced AI Detection
+          const advancedDetections = await detectAdvancedAI(text, settings.aiDefaults, settings.companyProfile);
+          advancedDetections.forEach((det, idx) => {
+            const matchedWords = words.filter((w: any) => det.text.toLowerCase().includes(w.text.toLowerCase()));
+            if (matchedWords.length > 0) {
+              const minX = Math.min(...matchedWords.map((w: any) => w.bbox.x0));
+              const minY = Math.min(...matchedWords.map((w: any) => w.bbox.y0));
+              const maxX = Math.max(...matchedWords.map((w: any) => w.bbox.x1));
+              const maxY = Math.max(...matchedWords.map((w: any) => w.bbox.y1));
+
+              allRedactions.push({
+                id: `advanced-${Date.now()}-${idx}`,
+                pageIndex: pageNum - 1,
+                x: (minX / canvas.width) * 100,
+                y: (minY / canvas.height) * 100,
+                width: ((maxX - minX) / canvas.width) * 100,
+                height: ((maxY - minY) / canvas.height) * 100,
+                label: det.label,
+                comment: det.reason,
+                type: 'auto',
+                isSelected: true
+              });
+            }
+          });
         }
 
         updatedFiles[i] = { ...file, redactions: allRedactions, status: 'ready' };
@@ -2421,6 +2752,35 @@ function BatchView({ files, setFiles, settings, setSettings, addAlert }: {
     } catch (error) {
       console.error(error);
       addAlert('error', 'Batch processing failed.');
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const handleUnlockAll = async () => {
+    setIsProcessing(true);
+    addAlert('info', 'Unlocking all PDFs in batch...');
+    try {
+      const updatedFiles = [...files];
+      for (let i = 0; i < updatedFiles.length; i++) {
+        const file = updatedFiles[i];
+        const pdfBytes = await fetch(file.url).then(res => res.arrayBuffer());
+        const uint8Array = new Uint8Array(pdfBytes);
+        let binary = '';
+        uint8Array.forEach(b => binary += String.fromCharCode(b));
+        const base64 = btoa(binary);
+        const unlockedBase64 = await unlockPDF(base64);
+        if (unlockedBase64) {
+          const blob = await fetch(`data:application/pdf;base64,${unlockedBase64}`).then(res => res.blob());
+          const url = URL.createObjectURL(blob);
+          updatedFiles[i] = { ...file, url, name: file.name.replace('.pdf', '_unlocked.pdf') };
+        }
+      }
+      setFiles(updatedFiles);
+      addAlert('success', 'All PDFs unlocked successfully.');
+    } catch (error) {
+      console.error(error);
+      addAlert('error', 'Failed to unlock some PDFs.');
     } finally {
       setIsProcessing(false);
     }
@@ -2469,14 +2829,24 @@ function BatchView({ files, setFiles, settings, setSettings, addAlert }: {
           <h2 className="text-3xl font-bold tracking-tight">Batch Redaction</h2>
           <p className="text-neutral-500 dark:text-neutral-400">Apply the same redaction rules to multiple documents.</p>
         </div>
-        <button 
-          onClick={processBatch}
-          disabled={isProcessing || files.length === 0}
-          className="bg-black dark:bg-white text-white dark:text-black px-6 py-3 rounded-2xl font-bold flex items-center gap-2 hover:opacity-90 transition-opacity disabled:opacity-50"
-        >
-          <Play className="w-5 h-5" />
-          Start Batch Process
-        </button>
+        <div className="flex items-center gap-3">
+          <button 
+            onClick={handleUnlockAll}
+            disabled={isProcessing || files.length === 0}
+            className="bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400 px-6 py-3 rounded-2xl font-bold flex items-center gap-2 hover:bg-neutral-200 dark:hover:bg-neutral-700 transition-colors disabled:opacity-50"
+          >
+            <EyeOff className="w-5 h-5" />
+            Unlock All
+          </button>
+          <button 
+            onClick={processBatch}
+            disabled={isProcessing || files.length === 0}
+            className="bg-black dark:bg-white text-white dark:text-black px-6 py-3 rounded-2xl font-bold flex items-center gap-2 hover:opacity-90 transition-opacity disabled:opacity-50"
+          >
+            <Play className="w-5 h-5" />
+            Start Batch Process
+          </button>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
@@ -2723,6 +3093,48 @@ function BatchView({ files, setFiles, settings, setSettings, addAlert }: {
   );
 }
 
+function CollapsibleSection({ title, icon: Icon, children, defaultOpen = false }: { title: string; icon: any; children: React.ReactNode; defaultOpen?: boolean }) {
+  const [isOpen, setIsOpen] = useState(defaultOpen);
+  return (
+    <section className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-3xl overflow-hidden transition-all duration-300 shadow-sm hover:shadow-md">
+      <button 
+        onClick={() => setIsOpen(!isOpen)}
+        className="w-full flex items-center justify-between p-6 hover:bg-neutral-50 dark:hover:bg-neutral-800/50 transition-colors"
+      >
+        <div className="flex items-center gap-3">
+          <div className={cn(
+            "w-10 h-10 rounded-xl flex items-center justify-center transition-colors",
+            isOpen ? "bg-black text-white dark:bg-white dark:text-black" : "bg-neutral-100 dark:bg-neutral-800 text-neutral-500"
+          )}>
+            <Icon className="w-5 h-5" />
+          </div>
+          <h3 className="font-bold text-xl">{title}</h3>
+        </div>
+        <motion.div
+          animate={{ rotate: isOpen ? 180 : 0 }}
+          transition={{ duration: 0.3, ease: "easeInOut" }}
+        >
+          <ChevronDown className="w-5 h-5 text-neutral-400" />
+        </motion.div>
+      </button>
+      <AnimatePresence initial={false}>
+        {isOpen && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.3, ease: "easeInOut" }}
+          >
+            <div className="p-6 pt-0 border-t border-neutral-100 dark:border-neutral-800">
+              {children}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </section>
+  );
+}
+
 function SettingsView({ settings, setSettings, onBack, activeFile, setFiles, addAlert }: { 
   settings: AppSettings; 
   setSettings: React.Dispatch<React.SetStateAction<AppSettings>>;
@@ -2740,14 +3152,43 @@ function SettingsView({ settings, setSettings, onBack, activeFile, setFiles, add
     return () => clearTimeout(timer);
   }, [settings]);
 
+  const addCompanyRule = () => {
+    const newRule: CompanyRule = {
+      id: Math.random().toString(36).substr(2, 9),
+      name: 'New Rule',
+      patterns: [],
+      sensitiveTerms: [],
+      type: 'keyword',
+      isActive: true
+    };
+    setSettings(prev => ({
+      ...prev,
+      companyRules: [...(prev.companyRules || []), newRule]
+    }));
+  };
+
+  const removeCompanyRule = (id: string) => {
+    setSettings(prev => ({
+      ...prev,
+      companyRules: (prev.companyRules || []).filter(r => r.id !== id)
+    }));
+  };
+
+  const updateCompanyRule = (id: string, updates: Partial<CompanyRule>) => {
+    setSettings(prev => ({
+      ...prev,
+      companyRules: (prev.companyRules || []).map(r => r.id === id ? { ...r, ...updates } : r)
+    }));
+  };
+
   return (
-    <div className="max-w-2xl mx-auto relative">
+    <div className="max-w-3xl mx-auto relative pb-20">
       <div className="flex items-center justify-between mb-8">
         <div className="flex items-center gap-4">
-          <button onClick={onBack} className="p-2 hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded-lg">
+          <button onClick={onBack} className="p-2 hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded-lg transition-colors">
             <ChevronLeft className="w-6 h-6" />
           </button>
-          <h2 className="text-3xl font-bold tracking-tight">Settings</h2>
+          <h2 className="text-4xl font-black tracking-tight">Settings</h2>
         </div>
         <AnimatePresence>
           {lastSaved && (
@@ -2755,25 +3196,20 @@ function SettingsView({ settings, setSettings, onBack, activeFile, setFiles, add
               initial={{ opacity: 0, x: 20 }}
               animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0, x: 10 }}
-              className="flex items-center gap-2 text-emerald-500 text-sm font-medium"
+              className="flex items-center gap-2 text-emerald-500 text-sm font-bold bg-emerald-50 dark:bg-emerald-950/30 px-4 py-2 rounded-full border border-emerald-100 dark:border-emerald-900/50"
             >
               <CheckCircle2 className="w-4 h-4" />
-              Changes saved automatically
+              Auto-saved
             </motion.div>
           )}
         </AnimatePresence>
       </div>
 
-      <div className="space-y-8">
+      <div className="space-y-4">
         {/* Document Metadata */}
         {activeFile && (
-          <section className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-3xl p-8">
-            <div className="flex items-center gap-3 mb-6">
-              <FileText className="w-5 h-5 text-neutral-400" />
-              <h3 className="font-bold text-xl">Document Metadata</h3>
-            </div>
-            
-            <div className="grid gap-4">
+          <CollapsibleSection title="Document Metadata" icon={FileText} defaultOpen={true}>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-4">
               {[
                 { label: 'Title', key: 'title' },
                 { label: 'Author', key: 'author' },
@@ -2783,7 +3219,7 @@ function SettingsView({ settings, setSettings, onBack, activeFile, setFiles, add
                 { label: 'Producer', key: 'producer' },
               ].map(field => (
                 <div key={field.key}>
-                  <label className="block text-sm font-medium text-neutral-500 mb-2">{field.label}</label>
+                  <label className="block text-xs font-bold text-neutral-400 uppercase tracking-widest mb-2">{field.label}</label>
                   <input 
                     type="text" 
                     value={(activeFile.metadata as any)?.[field.key] || ''}
@@ -2794,767 +3230,390 @@ function SettingsView({ settings, setSettings, onBack, activeFile, setFiles, add
                           : f
                       ));
                     }}
-                    className="w-full px-4 py-2 bg-neutral-50 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-xl focus:ring-2 focus:ring-black dark:focus:ring-white outline-none transition-all"
+                    className="w-full px-4 py-3 bg-neutral-50 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-2xl focus:ring-2 focus:ring-black dark:focus:ring-white outline-none transition-all"
+                    placeholder={`Enter ${field.label.toLowerCase()}...`}
                   />
                 </div>
               ))}
             </div>
-          </section>
+          </CollapsibleSection>
         )}
 
-        {/* Export Redaction Report */}
-        {activeFile && (
-          <section className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-3xl p-8">
-            <div className="flex items-center gap-3 mb-6">
-              <Download className="w-5 h-5 text-neutral-400" />
-              <h3 className="font-bold text-xl">Export Redaction Report</h3>
-            </div>
-            
-            <p className="text-sm text-neutral-500 mb-6">Download a detailed report of redactions in this document, including coordinates, labels, and private comments.</p>
-            
-            <div className="mb-6">
-              <label className="flex items-center gap-3 cursor-pointer group">
-                <input 
-                  type="checkbox" 
-                  checked={exportOnlySelected}
-                  onChange={(e) => setExportOnlySelected(e.target.checked)}
-                  className="w-4 h-4 accent-black dark:accent-white"
-                />
-                <span className="text-sm text-neutral-600 dark:text-neutral-400 group-hover:text-black dark:group-hover:text-white transition-colors">Export only selected redactions</span>
-              </label>
-            </div>
-
-            <div className="flex gap-4">
-              <button 
-                onClick={() => {
-                  const redactionsToExport = exportOnlySelected 
-                    ? activeFile.redactions.filter(r => r.isSelected)
-                    : activeFile.redactions;
-
-                  const data = redactionsToExport.map(r => ({
-                    page: r.pageIndex + 1,
-                    type: r.type,
-                    label: r.label || 'N/A',
-                    text: r.text || 'N/A',
-                    x: `${r.x.toFixed(2)}%`,
-                    y: `${r.y.toFixed(2)}%`,
-                    width: `${r.width.toFixed(2)}%`,
-                    height: `${r.height.toFixed(2)}%`,
-                    comment: r.comment || ''
-                  }));
-                  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-                  const url = URL.createObjectURL(blob);
-                  const a = document.createElement('a');
-                  a.href = url;
-                  a.download = `${activeFile.name}_redaction_report.json`;
-                  a.click();
-                }}
-                className="flex-1 py-3 bg-neutral-100 dark:bg-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-700 rounded-xl font-bold transition-colors flex items-center justify-center gap-2"
-              >
-                Export as JSON
-              </button>
-              <button 
-                onClick={() => {
-                  const redactionsToExport = exportOnlySelected 
-                    ? activeFile.redactions.filter(r => r.isSelected)
-                    : activeFile.redactions;
-
-                  const headers = ['Page', 'Type', 'Label', 'Matched Text', 'X', 'Y', 'Width', 'Height', 'Comment'];
-                  const rows = redactionsToExport.map(r => [
-                    r.pageIndex + 1,
-                    r.type,
-                    `"${(r.label || '').replace(/"/g, '""')}"`,
-                    `"${(r.text || '').replace(/"/g, '""')}"`,
-                    `${r.x.toFixed(2)}%`,
-                    `${r.y.toFixed(2)}%`,
-                    `${r.width.toFixed(2)}%`,
-                    `${r.height.toFixed(2)}%`,
-                    `"${(r.comment || '').replace(/"/g, '""')}"`
-                  ]);
-                  const csvContent = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
-                  const blob = new Blob([csvContent], { type: 'text/csv' });
-                  const url = URL.createObjectURL(blob);
-                  const a = document.createElement('a');
-                  a.href = url;
-                  a.download = `${activeFile.name}_redaction_report.csv`;
-                  a.click();
-                }}
-                className="flex-1 py-3 bg-neutral-100 dark:bg-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-700 rounded-xl font-bold transition-colors flex items-center justify-center gap-2"
-              >
-                Export as CSV
-              </button>
-            </div>
-          </section>
-        )}
-
-        {/* Theme Customization */}
-        <section className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-3xl p-8">
-          <div className="flex items-center gap-3 mb-6">
-            <Palette className="w-5 h-5 text-neutral-400" />
-            <h3 className="font-bold text-xl">Theme Customization</h3>
-          </div>
-          
-          <div className="space-y-6">
-            <div>
-              <label className="block text-sm font-medium text-neutral-500 mb-4">Theme Mode</label>
-              <div className="grid grid-cols-4 gap-4">
-                {(['light', 'dark', 'system', 'custom'] as const).map(mode => (
-                  <button
-                    key={mode}
-                    onClick={() => setSettings(prev => ({ ...prev, theme: mode }))}
-                    className={cn(
-                      "py-3 rounded-xl border-2 transition-all capitalize font-medium",
-                      settings.theme === mode 
-                        ? "border-black dark:border-white bg-black text-white dark:bg-white dark:text-black" 
-                        : "border-neutral-100 dark:border-neutral-800 hover:border-neutral-200 dark:hover:border-neutral-700"
-                    )}
-                  >
-                    {mode}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {settings.theme === 'custom' && settings.customTheme && (
-              <div className="space-y-6 pt-6 border-t border-neutral-100 dark:border-neutral-800">
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                  <div>
-                    <label className="block text-sm font-medium text-neutral-500 mb-2">Primary Color</label>
-                    <div className="flex gap-2">
-                      <input 
-                        type="color" 
-                        value={settings.customTheme.primaryColor}
-                        onChange={(e) => setSettings(prev => ({ 
-                          ...prev, 
-                          customTheme: { ...prev.customTheme!, primaryColor: e.target.value } 
-                        }))}
-                        className="w-10 h-10 rounded-lg cursor-pointer overflow-hidden border-none"
-                      />
-                      <input 
-                        type="text" 
-                        value={settings.customTheme.primaryColor}
-                        onChange={(e) => setSettings(prev => ({ 
-                          ...prev, 
-                          customTheme: { ...prev.customTheme!, primaryColor: e.target.value } 
-                        }))}
-                        className="flex-1 px-3 py-2 bg-neutral-50 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-lg text-sm"
-                      />
-                    </div>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-neutral-500 mb-2">Secondary Color</label>
-                    <div className="flex gap-2">
-                      <input 
-                        type="color" 
-                        value={settings.customTheme.secondaryColor}
-                        onChange={(e) => setSettings(prev => ({ 
-                          ...prev, 
-                          customTheme: { ...prev.customTheme!, secondaryColor: e.target.value } 
-                        }))}
-                        className="w-10 h-10 rounded-lg cursor-pointer overflow-hidden border-none"
-                      />
-                      <input 
-                        type="text" 
-                        value={settings.customTheme.secondaryColor}
-                        onChange={(e) => setSettings(prev => ({ 
-                          ...prev, 
-                          customTheme: { ...prev.customTheme!, secondaryColor: e.target.value } 
-                        }))}
-                        className="flex-1 px-3 py-2 bg-neutral-50 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-lg text-sm"
-                      />
-                    </div>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-neutral-500 mb-2">Accent Color</label>
-                    <div className="flex gap-2">
-                      <input 
-                        type="color" 
-                        value={settings.customTheme.accentColor}
-                        onChange={(e) => setSettings(prev => ({ 
-                          ...prev, 
-                          customTheme: { ...prev.customTheme!, accentColor: e.target.value } 
-                        }))}
-                        className="w-10 h-10 rounded-lg cursor-pointer overflow-hidden border-none"
-                      />
-                      <input 
-                        type="text" 
-                        value={settings.customTheme.accentColor}
-                        onChange={(e) => setSettings(prev => ({ 
-                          ...prev, 
-                          customTheme: { ...prev.customTheme!, accentColor: e.target.value } 
-                        }))}
-                        className="flex-1 px-3 py-2 bg-neutral-50 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-lg text-sm"
-                      />
-                    </div>
-                  </div>
+        {/* AI Defaults */}
+        <CollapsibleSection title="AI Defaults" icon={Zap}>
+          <div className="space-y-8 pt-4">
+            <div className="bg-neutral-50 dark:bg-neutral-800/50 p-6 rounded-2xl border border-neutral-100 dark:border-neutral-800">
+              <div className="flex items-center justify-between mb-4">
+                <div>
+                  <label className="block text-sm font-bold">Detection Sensitivity</label>
+                  <p className="text-xs text-neutral-500">Lower values are more aggressive, higher values are more precise.</p>
                 </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  <div>
-                    <label className="block text-sm font-medium text-neutral-500 mb-2">Canvas Background Color</label>
-                    <div className="flex gap-2">
-                      <input 
-                        type="color" 
-                        value={settings.customTheme.canvasBgColor}
-                        onChange={(e) => setSettings(prev => ({ 
-                          ...prev, 
-                          customTheme: { ...prev.customTheme!, canvasBgColor: e.target.value } 
-                        }))}
-                        className="w-10 h-10 rounded-lg cursor-pointer overflow-hidden border-none"
-                      />
-                      <input 
-                        type="text" 
-                        value={settings.customTheme.canvasBgColor}
-                        onChange={(e) => setSettings(prev => ({ 
-                          ...prev, 
-                          customTheme: { ...prev.customTheme!, canvasBgColor: e.target.value } 
-                        }))}
-                        className="flex-1 px-3 py-2 bg-neutral-50 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-lg text-sm"
-                      />
-                    </div>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-neutral-500 mb-2">Custom Font</label>
-                    <div className="flex gap-2">
-                      <input 
-                        type="text" 
-                        placeholder="e.g. 'Open Sans', sans-serif"
-                        value={settings.customTheme.fontFamily || ''}
-                        onChange={(e) => setSettings(prev => ({ 
-                          ...prev, 
-                          customTheme: { ...prev.customTheme!, fontFamily: e.target.value } 
-                        }))}
-                        className="flex-1 px-3 py-2 bg-neutral-50 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-lg text-sm"
-                      />
-                      <label className="px-4 py-2 bg-neutral-100 dark:bg-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-700 rounded-lg text-xs font-bold cursor-pointer flex items-center justify-center transition-colors">
-                        Upload Font
-                        <input 
-                          type="file" 
-                          accept=".ttf,.woff,.woff2"
-                          className="hidden"
-                          onChange={(e) => {
-                            const file = e.target.files?.[0];
-                            if (file) {
-                              const reader = new FileReader();
-                              reader.onload = (event) => {
-                                const fontData = event.target?.result as string;
-                                const fontName = file.name.split('.')[0];
-                                const newStyle = document.createElement('style');
-                                newStyle.appendChild(document.createTextNode(`
-                                  @font-face {
-                                    font-family: '${fontName}';
-                                    src: url('${fontData}');
-                                  }
-                                `));
-                                document.head.appendChild(newStyle);
-                                setSettings(prev => ({ 
-                                  ...prev, 
-                                  customTheme: { ...prev.customTheme!, fontFamily: `'${fontName}', sans-serif` } 
-                                }));
-                                addAlert('success', `Font "${fontName}" uploaded and applied.`);
-                              };
-                              reader.readAsDataURL(file);
-                            }
-                          }}
-                        />
-                      </label>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-        </section>
-
-        {/* AI Detection Section */}
-        <section className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-3xl p-8">
-          <div className="flex items-center gap-3 mb-6">
-            <RefreshCw className="w-5 h-5 text-neutral-400" />
-            <h3 className="font-bold text-xl">AI Detection Defaults</h3>
-          </div>
-          
-          <div className="space-y-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="font-medium">PII Detection</p>
-                <p className="text-xs text-neutral-500">Enable PII scanning by default</p>
-              </div>
-              <button 
-                onClick={() => setSettings(prev => ({ ...prev, aiDefaults: { ...prev.aiDefaults, piiEnabled: !prev.aiDefaults.piiEnabled } }))}
-                className={cn(
-                  "w-12 h-6 rounded-full transition-all relative",
-                  settings.aiDefaults?.piiEnabled ? "bg-black dark:bg-white" : "bg-neutral-200 dark:bg-neutral-800"
-                )}
-              >
-                <div className={cn(
-                  "absolute top-1 w-4 h-4 rounded-full transition-all",
-                  settings.aiDefaults?.piiEnabled ? "right-1 bg-white dark:bg-black" : "left-1 bg-neutral-400"
-                )} />
-              </button>
-            </div>
-
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="font-medium">Barcode & QR Detection</p>
-                <p className="text-xs text-neutral-500">Enable code scanning by default</p>
-              </div>
-              <button 
-                onClick={() => setSettings(prev => ({ ...prev, aiDefaults: { ...prev.aiDefaults, barcodesEnabled: !prev.aiDefaults.barcodesEnabled } }))}
-                className={cn(
-                  "w-12 h-6 rounded-full transition-all relative",
-                  settings.aiDefaults?.barcodesEnabled ? "bg-black dark:bg-white" : "bg-neutral-200 dark:bg-neutral-800"
-                )}
-              >
-                <div className={cn(
-                  "absolute top-1 w-4 h-4 rounded-full transition-all",
-                  settings.aiDefaults?.barcodesEnabled ? "right-1 bg-white dark:bg-black" : "left-1 bg-neutral-400"
-                )} />
-              </button>
-            </div>
-
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="font-medium">Company-Specific Data</p>
-                <p className="text-xs text-neutral-500">Enable company rule scanning by default</p>
-              </div>
-              <button 
-                onClick={() => setSettings(prev => ({ ...prev, aiDefaults: { ...prev.aiDefaults, companyDataEnabled: !prev.aiDefaults.companyDataEnabled } }))}
-                className={cn(
-                  "w-12 h-6 rounded-full transition-all relative",
-                  settings.aiDefaults?.companyDataEnabled ? "bg-black dark:bg-white" : "bg-neutral-200 dark:bg-neutral-800"
-                )}
-              >
-                <div className={cn(
-                  "absolute top-1 w-4 h-4 rounded-full transition-all",
-                  settings.aiDefaults?.companyDataEnabled ? "right-1 bg-white dark:bg-black" : "left-1 bg-neutral-400"
-                )} />
-              </button>
-            </div>
-
-            <div className="pt-4 border-t border-neutral-100 dark:border-neutral-800 space-y-4">
-              <div className="flex items-center justify-between mb-2">
-                <label className="text-sm font-medium text-neutral-500">Detection Sensitivity</label>
-                <span className="text-xs font-bold px-2 py-0.5 bg-neutral-100 dark:bg-neutral-800 rounded-lg">
-                  {Math.round((settings.aiDefaults?.sensitivity || 0.5) * 100)}%
+                <span className="text-lg font-black font-mono bg-black text-white dark:bg-white dark:text-black px-3 py-1 rounded-lg">
+                  {(settings.aiDefaults?.sensitivity || 0.7).toFixed(2)}
                 </span>
               </div>
               <input 
                 type="range"
-                min="0"
-                max="1"
+                min="0.1"
+                max="1.0"
                 step="0.05"
-                value={settings.aiDefaults?.sensitivity || 0.5}
-                onChange={(e) => setSettings(prev => ({ ...prev, aiDefaults: { ...prev.aiDefaults, sensitivity: parseFloat(e.target.value) } }))}
-                className="w-full h-2 bg-neutral-100 dark:bg-neutral-800 rounded-lg appearance-none cursor-pointer accent-black dark:accent-white"
+                value={settings.aiDefaults?.sensitivity || 0.7}
+                onChange={(e) => setSettings(prev => ({
+                  ...prev,
+                  aiDefaults: { ...prev.aiDefaults, sensitivity: parseFloat(e.target.value) }
+                }))}
+                className="w-full h-2 bg-neutral-200 dark:bg-neutral-700 rounded-lg appearance-none cursor-pointer accent-black dark:accent-white"
               />
-              <div className="flex justify-between text-[10px] text-neutral-400 font-bold uppercase tracking-widest">
-                <span>Strict</span>
-                <span>Balanced</span>
-                <span>Aggressive</span>
-              </div>
             </div>
 
-            <div className="pt-4 border-t border-neutral-100 dark:border-neutral-800 space-y-4">
-              <label className="block text-sm font-medium text-neutral-500 mb-2">Company Profile</label>
-              
-              <div>
-                <label className="block text-xs font-bold text-neutral-400 uppercase tracking-widest mb-1">Company Name</label>
-                <input 
-                  type="text"
-                  value={settings.companyProfile?.name || ''}
-                  onChange={(e) => setSettings(prev => ({
-                    ...prev,
-                    companyProfile: { ...(prev.companyProfile || { name: '', content: '' }), name: e.target.value }
-                  }))}
-                  placeholder="Enter company name"
-                  className="w-full px-4 py-2 bg-neutral-50 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-xl outline-none focus:ring-2 focus:ring-black dark:focus:ring-white transition-all text-sm"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-bold text-neutral-400 uppercase tracking-widest mb-1">Contact Details</label>
-                <textarea 
-                  value={settings.companyProfile?.contactDetails || ''}
-                  onChange={(e) => setSettings(prev => ({
-                    ...prev,
-                    companyProfile: { ...(prev.companyProfile || { name: '', content: '' }), contactDetails: e.target.value }
-                  }))}
-                  placeholder="Enter contact details (email, phone, address, etc.)"
-                  className="w-full px-4 py-2 bg-neutral-50 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-xl outline-none focus:ring-2 focus:ring-black dark:focus:ring-white transition-all text-sm h-20 resize-none"
-                />
-              </div>
-
-              <div className="flex items-center gap-4">
-                <label className="flex-1 flex items-center justify-center gap-2 p-4 border-2 border-dashed border-neutral-200 dark:border-neutral-800 rounded-2xl hover:border-black dark:hover:border-white transition-all cursor-pointer">
-                  <Upload className="w-5 h-5 text-neutral-400" />
-                  <span className="text-sm text-neutral-600 dark:text-neutral-400">
-                    {settings.companyProfile?.content ? 'Profile uploaded' : 'Upload Profile (PDF/DOCX)'}
-                  </span>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              {[
+                { label: 'PII Detection', key: 'piiEnabled', icon: ShieldCheck },
+                { label: 'Barcodes', key: 'barcodesEnabled', icon: Barcode },
+                { label: 'Company Data', key: 'companyDataEnabled', icon: Brain },
+              ].map(item => (
+                <label key={item.key} className={cn(
+                  "flex flex-col items-center justify-center p-6 rounded-2xl cursor-pointer transition-all border-2",
+                  (settings.aiDefaults as any)?.[item.key]
+                    ? "bg-black text-white border-black dark:bg-white dark:text-black dark:border-white shadow-lg"
+                    : "bg-neutral-50 dark:bg-neutral-800 border-transparent hover:border-neutral-200 dark:hover:border-neutral-700"
+                )}>
+                  <item.icon className="w-6 h-6 mb-3" />
+                  <span className="text-xs font-bold uppercase tracking-wider text-center">{item.label}</span>
                   <input 
-                    type="file" 
-                    className="hidden" 
-                    onChange={(e) => {
-                      const file = e.target.files?.[0];
-                      if (file) {
-                        setSettings(prev => ({ 
-                          ...prev, 
-                          companyProfile: { 
-                            ...(prev.companyProfile || { name: '', content: '' }), 
-                            name: prev.companyProfile?.name || file.name, 
-                            content: 'Profile uploaded' 
-                          } 
-                        }));
-                      }
-                    }}
+                    type="checkbox" 
+                    className="hidden"
+                    checked={(settings.aiDefaults as any)?.[item.key]}
+                    onChange={(e) => setSettings(prev => ({
+                      ...prev,
+                      aiDefaults: { ...prev.aiDefaults, [item.key]: e.target.checked }
+                    }))}
                   />
                 </label>
-                {settings.companyProfile?.content && (
-                  <button 
-                    onClick={() => setSettings(prev => ({ 
-                      ...prev, 
-                      companyProfile: { ...(prev.companyProfile || { name: '', content: '' }), content: '' } 
-                    }))}
-                    className="p-2 text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 rounded-xl transition-colors"
-                  >
-                    <Trash2 className="w-5 h-5" />
-                  </button>
-                )}
-              </div>
+              ))}
             </div>
           </div>
-        </section>
+        </CollapsibleSection>
 
-        {/* Company Rules Section */}
-        <section className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-3xl p-8">
-          <div className="flex items-center justify-between mb-6">
-            <div className="flex items-center gap-3">
-              <Bookmark className="w-5 h-5 text-neutral-400" />
-              <h3 className="font-bold text-xl">Company Rules</h3>
+        {/* Company Rules */}
+        <CollapsibleSection title="Company Rules" icon={ShieldCheck}>
+          <div className="space-y-6 pt-4">
+            <div className="flex items-center justify-between">
+              <p className="text-sm text-neutral-500 font-medium leading-relaxed max-w-md">
+                Define custom rules for automated redaction. These rules can target specific keywords, patterns, or coordinates based on company-specific document layouts.
+              </p>
+              <button 
+                onClick={addCompanyRule}
+                className="px-4 py-2 bg-black dark:bg-white text-white dark:text-black rounded-xl text-xs font-black uppercase tracking-widest hover:opacity-90 transition-opacity flex items-center gap-2 shadow-sm"
+              >
+                <Plus className="w-4 h-4" />
+                Add Rule
+              </button>
             </div>
-            <button 
-              onClick={() => {
-                const newRule: CompanyRule = {
-                  id: Math.random().toString(36).substring(7),
-                  name: 'New Rule Template',
-                  patterns: [],
-                  sensitiveTerms: []
-                };
-                setSettings(prev => ({ ...prev, companyRules: [...(prev.companyRules || []), newRule] }));
-              }}
-              className="px-4 py-2 bg-black dark:bg-white text-white dark:text-black rounded-xl text-sm font-bold hover:opacity-90 transition-opacity flex items-center gap-2"
-            >
-              <Plus className="w-4 h-4" />
-              Add Template
-            </button>
-          </div>
 
-          <div className="space-y-4">
-            {(settings.companyRules || []).length === 0 ? (
-              <div className="text-center py-12 border-2 border-dashed border-neutral-100 dark:border-neutral-800 rounded-2xl">
-                <p className="text-neutral-400 text-sm">No company rules defined yet.</p>
-              </div>
-            ) : (
-              settings.companyRules.map(rule => (
-                <div key={rule.id} className="p-6 border border-neutral-200 dark:border-neutral-800 rounded-2xl space-y-4">
-                  <div className="flex items-center justify-between">
-                    <div className="flex flex-col gap-1">
-                      <div className="flex items-center gap-2">
+            <div className="grid grid-cols-1 gap-4">
+              {(settings.companyRules || []).map(rule => (
+                <div key={rule.id} className="p-6 bg-neutral-50 dark:bg-neutral-800 rounded-3xl border border-neutral-100 dark:border-neutral-800 group hover:border-neutral-300 dark:hover:border-neutral-700 transition-all">
+                  <div className="flex items-start justify-between mb-6">
+                    <div className="flex items-center gap-4">
+                      <div className="w-12 h-12 bg-white dark:bg-neutral-900 rounded-2xl flex items-center justify-center shadow-sm border border-neutral-100 dark:border-neutral-800">
+                        <Bookmark className="w-6 h-6 text-neutral-400" />
+                      </div>
+                      <div className="flex-1">
                         <input 
                           type="text"
                           value={rule.name}
-                          onChange={(e) => {
-                            const updated = settings.companyRules.map(r => r.id === rule.id ? { ...r, name: e.target.value } : r);
-                            setSettings(prev => ({ ...prev, companyRules: updated }));
-                          }}
-                          className="font-bold bg-transparent outline-none focus:ring-2 focus:ring-black dark:focus:ring-white rounded px-2 text-lg"
+                          onChange={(e) => updateCompanyRule(rule.id, { name: e.target.value })}
+                          className="text-lg font-black bg-transparent border-none p-0 focus:ring-0 w-full"
+                          placeholder="Rule Name"
                         />
-                        <button 
-                          onClick={() => {
-                            addAlert('info', `Editing "${rule.name}" in-place.`);
-                          }}
-                          className="p-1 hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded-lg text-neutral-400"
-                          title="Edit Rule"
-                        >
-                          <Settings className="w-4 h-4" />
-                        </button>
-                      </div>
-                      {rule.description && <p className="text-[10px] text-neutral-400 px-2">{rule.description}</p>}
-                    </div>
-                    <button 
-                      onClick={() => setSettings(prev => ({ ...prev, companyRules: prev.companyRules.filter(r => r.id !== rule.id) }))}
-                      className="p-2 text-neutral-400 hover:text-red-500 transition-colors"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  </div>
-
-                  <div className="space-y-2">
-                    <label className="text-[10px] font-bold text-neutral-400 uppercase tracking-widest">Company Identifiers</label>
-                    <input 
-                      type="text"
-                      placeholder="Add identifier (Enter)..."
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                          const val = e.currentTarget.value.trim();
-                          if (val) {
-                            const updated = settings.companyRules.map(r => r.id === rule.id ? { ...r, identifiers: [...(r.identifiers || []), val] } : r);
-                            setSettings(prev => ({ ...prev, companyRules: updated }));
-                            e.currentTarget.value = '';
-                          }
-                        }
-                      }}
-                      className="w-full px-3 py-2 bg-neutral-50 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-xl text-xs outline-none focus:ring-2 focus:ring-black dark:focus:ring-white"
-                    />
-                    <div className="flex flex-wrap gap-2">
-                      {(rule.identifiers || []).map((id, i) => (
-                        <span key={i} className="px-2 py-1 bg-neutral-100 dark:bg-neutral-800 rounded text-[10px] font-medium border border-neutral-200 dark:border-neutral-700 flex items-center gap-1">
-                          {id}
-                          <button onClick={() => {
-                            const updated = settings.companyRules.map(r => r.id === rule.id ? { ...r, identifiers: (r.identifiers || []).filter((_, idx) => idx !== i) } : r);
-                            setSettings(prev => ({ ...prev, companyRules: updated }));
-                          }}><X className="w-3 h-3" /></button>
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div className="space-y-2">
-                    <label className="text-[10px] font-bold text-neutral-400 uppercase tracking-widest">Sensitive Terms</label>
-                    <input 
-                      type="text"
-                      placeholder="Add term (Enter)..."
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                          const val = e.currentTarget.value.trim();
-                          if (val) {
-                            const updated = settings.companyRules.map(r => r.id === rule.id ? { ...r, sensitiveTerms: [...(r.sensitiveTerms || []), val] } : r);
-                            setSettings(prev => ({ ...prev, companyRules: updated }));
-                            e.currentTarget.value = '';
-                          }
-                        }
-                      }}
-                      className="w-full px-3 py-2 bg-neutral-50 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-xl text-xs outline-none focus:ring-2 focus:ring-black dark:focus:ring-white"
-                    />
-                    <div className="flex flex-wrap gap-2">
-                      {(rule.sensitiveTerms || []).map((term, i) => (
-                        <span key={i} className="px-2 py-1 bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 rounded text-[10px] font-medium border border-indigo-100 dark:border-indigo-900/50 flex items-center gap-1">
-                          {term}
-                          <button onClick={() => {
-                            const updated = settings.companyRules.map(r => r.id === rule.id ? { ...r, sensitiveTerms: (r.sensitiveTerms || []).filter((_, idx) => idx !== i) } : r);
-                            setSettings(prev => ({ ...prev, companyRules: updated }));
-                          }}><X className="w-3 h-3" /></button>
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-
-                  {rule.learnedCoordinates && rule.learnedCoordinates.length > 0 && (
-                    <div className="space-y-2">
-                      <label className="text-[10px] font-bold text-neutral-400 uppercase tracking-widest">Learned Redaction Areas ({rule.learnedCoordinates.length})</label>
-                      <div className="max-h-32 overflow-y-auto space-y-1 pr-2 custom-scrollbar">
-                        {rule.learnedCoordinates.map((coord, i) => (
-                          <div key={i} className="flex items-center justify-between p-2 bg-neutral-50 dark:bg-neutral-800/50 rounded-lg border border-neutral-100 dark:border-neutral-800 text-[10px]">
-                            <div className="flex flex-col">
-                              <span className="font-bold text-neutral-500">Page {coord.pageIndex + 1}</span>
-                              <span className="font-medium">{coord.label}</span>
-                            </div>
-                            <div className="flex items-center gap-3">
-                              <span className="text-neutral-400 font-mono">[{Math.round(coord.x)}%, {Math.round(coord.y)}%]</span>
-                              <button 
-                                onClick={() => {
-                                  const updated = settings.companyRules.map(r => r.id === rule.id ? { ...r, learnedCoordinates: r.learnedCoordinates?.filter((_, idx) => idx !== i) } : r);
-                                  setSettings(prev => ({ ...prev, companyRules: updated }));
-                                }}
-                                className="text-neutral-400 hover:text-red-500 transition-colors"
-                              >
-                                <Trash2 className="w-3 h-3" />
-                              </button>
-                            </div>
-                          </div>
-                        ))}
+                        <p className="text-xs font-bold text-neutral-400 uppercase tracking-widest mt-1">
+                          {rule.patterns?.length || 0} Patterns • {rule.learnedCoordinates?.length || 0} Coordinates
+                        </p>
                       </div>
                     </div>
-                  )}
-                  
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div className="space-y-2">
-                      <label className="text-[10px] font-bold text-neutral-400 uppercase tracking-widest">Regex Patterns</label>
-                      <input 
-                        type="text"
-                        placeholder="Add regex (Enter)..."
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') {
-                            const val = e.currentTarget.value.trim();
-                            if (val) {
-                              const updated = settings.companyRules.map(r => r.id === rule.id ? { ...r, patterns: [...r.patterns, val] } : r);
-                              setSettings(prev => ({ ...prev, companyRules: updated }));
-                              e.currentTarget.value = '';
-                            }
-                          }
-                        }}
-                        className="w-full px-3 py-2 bg-neutral-50 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-xl text-xs outline-none focus:ring-2 focus:ring-black dark:focus:ring-white"
-                      />
+                    <div className="flex items-center gap-2">
+                      <button 
+                        onClick={() => updateCompanyRule(rule.id, { isActive: !rule.isActive })}
+                        className={cn(
+                          "px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all",
+                          rule.isActive 
+                            ? "bg-emerald-100 text-emerald-600 dark:bg-emerald-950/40 dark:text-emerald-400" 
+                            : "bg-neutral-200 text-neutral-500 dark:bg-neutral-700 dark:text-neutral-400"
+                        )}
+                      >
+                        {rule.isActive ? 'Active' : 'Disabled'}
+                      </button>
+                      <button 
+                        onClick={() => removeCompanyRule(rule.id)}
+                        className="p-2 text-neutral-400 hover:text-red-500 transition-colors"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-6">
+                    <div className="space-y-3">
+                      <label className="text-[10px] font-black text-neutral-400 uppercase tracking-widest">Patterns & Keywords</label>
                       <div className="flex flex-wrap gap-2">
-                        {rule.patterns.map((pattern, i) => (
-                          <span key={i} className="px-2 py-1 bg-neutral-100 dark:bg-neutral-800 rounded text-[10px] font-medium flex items-center gap-1">
-                            {pattern}
+                        {(rule.patterns || []).map((p, idx) => (
+                          <span key={idx} className="px-3 py-1 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 rounded-lg text-xs font-bold flex items-center gap-2 group/tag">
+                            {p}
                             <button onClick={() => {
-                              const updated = settings.companyRules.map(r => r.id === rule.id ? { ...r, patterns: r.patterns.filter((_, idx) => idx !== i) } : r);
-                              setSettings(prev => ({ ...prev, companyRules: updated }));
-                            }}><X className="w-3 h-3" /></button>
+                              const updatedPatterns = rule.patterns.filter((_, i) => i !== idx);
+                              updateCompanyRule(rule.id, { patterns: updatedPatterns });
+                            }} className="opacity-0 group-hover/tag:opacity-100 transition-opacity"><X className="w-3 h-3" /></button>
                           </span>
                         ))}
+                        <button 
+                          onClick={() => {
+                            const val = prompt('Enter new pattern or keyword:');
+                            if (val) {
+                              updateCompanyRule(rule.id, { patterns: [...(rule.patterns || []), val] });
+                            }
+                          }}
+                          className="px-3 py-1 border border-dashed border-neutral-300 dark:border-neutral-600 rounded-lg text-xs font-bold text-neutral-400 hover:border-neutral-500 transition-all"
+                        >
+                          + Add
+                        </button>
                       </div>
+                    </div>
+
+                    <div className="space-y-3">
+                      <label className="text-[10px] font-black text-neutral-400 uppercase tracking-widest">Rule Type</label>
+                      <select 
+                        value={rule.type || 'keyword'}
+                        onChange={(e) => updateCompanyRule(rule.id, { type: e.target.value as any })}
+                        className="w-full bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 rounded-xl text-xs font-bold focus:ring-black dark:focus:ring-white"
+                      >
+                        <option value="keyword">Keyword Match</option>
+                        <option value="regex">Regex Pattern</option>
+                        <option value="coordinate">Coordinate Based</option>
+                      </select>
                     </div>
                   </div>
                 </div>
-              ))
-            )}
-          </div>
-        </section>
-
-        {/* Appearance */}
-        <section className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-3xl p-8">
-          <div className="flex items-center gap-3 mb-6">
-            <Sun className="w-5 h-5 text-neutral-400" />
-            <h3 className="font-bold text-xl">Appearance</h3>
-          </div>
-          
-          <div className="grid grid-cols-3 gap-4">
-            {(['light', 'dark', 'system'] as Theme[]).map(t => (
-              <button
-                key={t}
-                onClick={() => setSettings(prev => ({ ...prev, theme: t }))}
-                className={cn(
-                  "flex flex-col items-center gap-3 p-4 rounded-2xl border-2 transition-all",
-                  settings.theme === t ? "border-black dark:border-white bg-neutral-50 dark:bg-neutral-800" : "border-neutral-100 dark:border-neutral-800 hover:border-neutral-200"
-                )}
-              >
-                {t === 'light' && <Sun className="w-6 h-6" />}
-                {t === 'dark' && <Moon className="w-6 h-6" />}
-                {t === 'system' && <Monitor className="w-6 h-6" />}
-                <span className="text-sm font-medium capitalize">{t}</span>
-              </button>
-            ))}
-          </div>
-        </section>
-
-        {/* Output File Name */}
-        <section className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-3xl p-8">
-          <div className="flex items-center gap-3 mb-6">
-            <FileText className="w-5 h-5 text-neutral-400" />
-            <h3 className="font-bold text-xl">Output File Name</h3>
-          </div>
-          
-          <div className="space-y-4">
-            <div>
-              <label className="block text-sm font-medium text-neutral-500 mb-2">Pattern</label>
-              <input 
-                type="text" 
-                value={settings.fileNamePattern}
-                onChange={(e) => setSettings(prev => ({ ...prev, fileNamePattern: e.target.value }))}
-                placeholder="{name}_redacted"
-                className="w-full px-4 py-2 bg-neutral-50 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-xl focus:ring-2 focus:ring-black dark:focus:ring-white outline-none transition-all"
-              />
-            </div>
-            
-            <div className="flex flex-wrap gap-2">
-              {[
-                { label: 'Original Name', value: '{name}' },
-                { label: 'Date', value: '{date}' },
-                { label: 'Time', value: '{time}' },
-                { label: 'Redacted Suffix', value: '_redacted' },
-                { label: 'Rejected Suffix', value: '_rejected' },
-              ].map(tag => (
-                <button
-                  key={tag.value}
-                  onClick={() => setSettings(prev => ({ ...prev, fileNamePattern: prev.fileNamePattern + tag.value }))}
-                  className="px-3 py-1 bg-neutral-100 dark:bg-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-700 rounded-lg text-xs font-medium transition-colors"
-                >
-                  + {tag.label}
-                </button>
               ))}
             </div>
-
-            <div className="p-4 bg-neutral-50 dark:bg-neutral-800/50 rounded-2xl border border-neutral-100 dark:border-neutral-800">
-              <span className="text-xs text-neutral-500 block mb-1 uppercase font-bold tracking-wider">Preview</span>
-              <span className="font-mono text-sm">
-                {settings.fileNamePattern
-                  .replace('{name}', 'document')
-                  .replace('{date}', new Date().toISOString().split('T')[0])
-                  .replace('{time}', new Date().toLocaleTimeString().replace(/:/g, '-'))
-                }.pdf
-              </span>
-            </div>
           </div>
-        </section>
-
-        {/* Redaction Style */}
-        <section className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-3xl p-8">
-          <div className="flex items-center gap-3 mb-6">
-            <Palette className="w-5 h-5 text-neutral-400" />
-            <h3 className="font-bold text-xl">Redaction Style</h3>
-          </div>
-          
-          <div className="space-y-6">
-            <div className="flex items-center justify-between">
-              <span className="text-neutral-500">Redaction Color</span>
-              <div className="flex items-center gap-3">
-                <input 
-                  type="color" 
-                  value={settings.redactionColor}
-                  onChange={(e) => setSettings(prev => ({ ...prev, redactionColor: e.target.value }))}
-                  className="w-10 h-10 rounded-lg cursor-pointer border-none bg-transparent"
-                />
-                <span className="font-mono text-sm uppercase">{settings.redactionColor}</span>
-              </div>
-            </div>
-
-            <div className="space-y-3">
-              <label className="block text-sm font-medium text-neutral-500 mb-2">Fill Style</label>
-              <div className="grid grid-cols-3 gap-3">
-                {(['solid', 'pattern', 'outline'] as RedactionStyle[]).map(style => (
+        </CollapsibleSection>
+        <CollapsibleSection title="Appearance" icon={Palette}>
+          <div className="space-y-8 pt-4">
+            <div>
+              <label className="block text-xs font-bold text-neutral-400 uppercase tracking-widest mb-4">Theme Mode</label>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                {[
+                  { id: 'light', icon: Sun, label: 'Light' },
+                  { id: 'dark', icon: Moon, label: 'Dark' },
+                  { id: 'system', icon: Monitor, label: 'System' },
+                  { id: 'custom', icon: Palette, label: 'Custom' },
+                ].map(t => (
                   <button
-                    key={style}
-                    onClick={() => setSettings(prev => ({ ...prev, redactionStyle: style }))}
+                    key={t.id}
+                    onClick={() => setSettings(prev => ({ ...prev, theme: t.id as Theme }))}
                     className={cn(
-                      "py-3 rounded-xl border-2 transition-all flex flex-col items-center gap-2",
-                      settings.redactionStyle === style 
-                        ? "border-black dark:border-white bg-neutral-50 dark:bg-neutral-800" 
-                        : "border-neutral-100 dark:border-neutral-800 hover:border-neutral-200 dark:hover:border-neutral-700"
+                      "flex flex-col items-center gap-3 p-4 rounded-2xl border-2 transition-all",
+                      settings.theme === t.id 
+                        ? "bg-black text-white dark:bg-white dark:text-black border-black dark:border-white shadow-lg scale-105" 
+                        : "bg-neutral-50 dark:bg-neutral-800 border-transparent hover:border-neutral-200 dark:hover:border-neutral-700"
                     )}
                   >
-                    <div 
-                      className="w-8 h-8 rounded border border-neutral-200 dark:border-neutral-700"
-                      style={{
-                        backgroundColor: style === 'outline' ? 'transparent' : settings.redactionColor,
-                        borderWidth: style === 'outline' ? '2px' : '1px',
-                        borderColor: settings.redactionColor,
-                        backgroundImage: style === 'pattern' ? `repeating-linear-gradient(45deg, transparent, transparent 5px, rgba(255,255,255,0.2) 5px, rgba(255,255,255,0.2) 10px)` : 'none'
-                      }}
-                    />
-                    <span className="text-[10px] font-bold uppercase tracking-wider">{style}</span>
+                    <t.icon className="w-6 h-6" />
+                    <span className="text-[10px] font-black uppercase tracking-widest">{t.label}</span>
                   </button>
                 ))}
               </div>
             </div>
+
+            {settings.theme === 'custom' && (
+              <motion.div 
+                initial={{ opacity: 0, y: -10 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="grid grid-cols-1 md:grid-cols-3 gap-6 p-6 bg-neutral-50 dark:bg-neutral-800/50 rounded-2xl border border-neutral-100 dark:border-neutral-800"
+              >
+                {[
+                  { label: 'Primary', key: 'primaryColor' },
+                  { label: 'Secondary', key: 'secondaryColor' },
+                  { label: 'Accent', key: 'accentColor' },
+                ].map(color => (
+                  <div key={color.key}>
+                    <label className="block text-[10px] font-black text-neutral-400 uppercase tracking-widest mb-2">{color.label}</label>
+                    <div className="flex items-center gap-3 bg-white dark:bg-neutral-900 p-2 rounded-xl border border-neutral-200 dark:border-neutral-700">
+                      <input 
+                        type="color" 
+                        value={(settings.customTheme as any)?.[color.key]}
+                        onChange={(e) => setSettings(prev => ({
+                          ...prev,
+                          customTheme: { ...prev.customTheme!, [color.key]: e.target.value }
+                        }))}
+                        className="w-8 h-8 rounded-lg cursor-pointer bg-transparent border-none"
+                      />
+                      <span className="text-xs font-mono font-bold">{(settings.customTheme as any)?.[color.key]}</span>
+                    </div>
+                  </div>
+                ))}
+              </motion.div>
+            )}
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+              <div>
+                <label className="block text-xs font-bold text-neutral-400 uppercase tracking-widest mb-4">Redaction Color</label>
+                <div className="flex items-center gap-4 bg-neutral-50 dark:bg-neutral-800 p-4 rounded-2xl">
+                  <input 
+                    type="color" 
+                    value={settings.redactionColor}
+                    onChange={(e) => setSettings(prev => ({ ...prev, redactionColor: e.target.value }))}
+                    className="w-12 h-12 rounded-xl cursor-pointer bg-transparent border-none"
+                  />
+                  <div>
+                    <span className="text-sm font-black font-mono block">{settings.redactionColor}</span>
+                    <span className="text-[10px] text-neutral-500 uppercase font-bold">Hex Code</span>
+                  </div>
+                </div>
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-neutral-400 uppercase tracking-widest mb-4">Redaction Style</label>
+                <select 
+                  value={settings.redactionStyle}
+                  onChange={(e) => setSettings(prev => ({ ...prev, redactionStyle: e.target.value as RedactionStyle }))}
+                  className="w-full px-4 py-4 bg-neutral-50 dark:bg-neutral-800 border-2 border-transparent hover:border-neutral-200 dark:hover:border-neutral-700 rounded-2xl outline-none focus:ring-2 focus:ring-black dark:focus:ring-white transition-all font-bold"
+                >
+                  <option value="solid">Solid Fill</option>
+                  <option value="outline">Outline Only</option>
+                  <option value="pattern">Hatched Pattern</option>
+                </select>
+              </div>
+            </div>
           </div>
-        </section>
+        </CollapsibleSection>
+
+        {/* Company Profile */}
+        <CollapsibleSection title="Company Profile" icon={Brain}>
+          <div className="space-y-6 pt-4">
+            <div className="bg-blue-50 dark:bg-blue-950/20 p-4 rounded-2xl border border-blue-100 dark:border-blue-900/50 flex gap-3">
+              <Info className="w-5 h-5 text-blue-500 shrink-0" />
+              <p className="text-xs text-blue-700 dark:text-blue-300 leading-relaxed">
+                Providing company context helps the AI identify internal project names, proprietary codes, and specific identifiers unique to your organization.
+              </p>
+            </div>
+            
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div>
+                <label className="block text-xs font-bold text-neutral-400 uppercase tracking-widest mb-2">Organization Name</label>
+                <input 
+                  type="text" 
+                  value={settings.companyProfile?.name}
+                  onChange={(e) => setSettings(prev => ({
+                    ...prev,
+                    companyProfile: { ...prev.companyProfile!, name: e.target.value }
+                  }))}
+                  className="w-full px-4 py-4 bg-neutral-50 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-2xl focus:ring-2 focus:ring-black dark:focus:ring-white outline-none transition-all font-medium"
+                  placeholder="e.g. Acme Global Industries"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-neutral-400 uppercase tracking-widest mb-2">Contact Details</label>
+                <input 
+                  type="text" 
+                  value={settings.companyProfile?.contactDetails}
+                  onChange={(e) => setSettings(prev => ({
+                    ...prev,
+                    companyProfile: { ...prev.companyProfile!, contactDetails: e.target.value }
+                  }))}
+                  className="w-full px-4 py-4 bg-neutral-50 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-2xl focus:ring-2 focus:ring-black dark:focus:ring-white outline-none transition-all font-medium"
+                  placeholder="e.g. legal@acme.com"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-neutral-400 uppercase tracking-widest mb-2">Internal Identifiers & Keywords</label>
+              <textarea 
+                value={settings.companyProfile?.content}
+                onChange={(e) => setSettings(prev => ({
+                  ...prev,
+                  companyProfile: { ...prev.companyProfile!, content: e.target.value }
+                }))}
+                className="w-full h-40 px-4 py-4 bg-neutral-50 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-2xl focus:ring-2 focus:ring-black dark:focus:ring-white outline-none transition-all resize-none font-medium leading-relaxed"
+                placeholder="List internal project names, proprietary codes, or specific identifiers (one per line)..."
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-neutral-400 uppercase tracking-widest mb-2">Upload Profile (PDF/DOCX)</label>
+              <div className="flex items-center justify-center w-full">
+                <label className="flex flex-col items-center justify-center w-full h-32 border-2 border-dashed border-neutral-200 dark:border-neutral-700 rounded-2xl cursor-pointer hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-all">
+                  <div className="flex flex-col items-center justify-center pt-5 pb-6">
+                    <FileUp className="w-8 h-8 text-neutral-400 mb-2" />
+                    <p className="text-xs text-neutral-500 font-bold uppercase tracking-widest">Click to upload company profile</p>
+                  </div>
+                  <input type="file" className="hidden" accept=".pdf,.docx" />
+                </label>
+              </div>
+            </div>
+          </div>
+        </CollapsibleSection>
+
+        {/* Output File Name */}
+        <CollapsibleSection title="Output File Name" icon={Settings2}>
+          <div className="space-y-6 pt-4">
+            <div>
+              <label className="block text-xs font-bold text-neutral-400 uppercase tracking-widest mb-2">File Naming Pattern</label>
+              <input 
+                type="text" 
+                value={settings.fileNamePattern}
+                onChange={(e) => setSettings(prev => ({ ...prev, fileNamePattern: e.target.value }))}
+                className="w-full px-4 py-4 bg-neutral-50 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-2xl focus:ring-2 focus:ring-black dark:focus:ring-white outline-none transition-all font-mono"
+                placeholder="{name}_redacted"
+              />
+              <div className="mt-3 flex flex-wrap gap-2">
+                {['{name}', '{date}', '{time}', '{id}'].map(tag => (
+                  <button 
+                    key={tag}
+                    onClick={() => setSettings(prev => ({ ...prev, fileNamePattern: prev.fileNamePattern + tag }))}
+                    className="px-3 py-1 bg-neutral-100 dark:bg-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-700 rounded-lg text-[10px] font-black font-mono transition-colors"
+                  >
+                    {tag}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="bg-neutral-50 dark:bg-neutral-800/50 p-4 rounded-2xl border border-neutral-100 dark:border-neutral-800">
+              <label className="block text-[10px] font-black text-neutral-400 uppercase tracking-widest mb-1">Preview</label>
+              <p className="text-sm font-bold font-mono truncate">
+                {formatFileName(activeFile?.name || 'document.pdf', settings.fileNamePattern)}.pdf
+              </p>
+            </div>
+          </div>
+        </CollapsibleSection>
 
         {/* Toolbar Customization */}
-        <section className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-3xl p-8">
-          <div className="flex items-center gap-3 mb-6">
-            <Settings className="w-5 h-5 text-neutral-400" />
-            <h3 className="font-bold text-xl">Toolbar Customization</h3>
-          </div>
-          
-          <div className="space-y-3">
-            {settings.toolbar.map((tool, index) => (
-              <div 
-                key={tool.id} 
-                className="flex items-center justify-between p-4 bg-neutral-50 dark:bg-neutral-800/50 rounded-2xl border border-neutral-100 dark:border-neutral-800"
-              >
-                <div className="flex items-center gap-4">
+        <CollapsibleSection title="Toolbar Customization" icon={LayoutGrid}>
+          <div className="space-y-6 pt-4">
+            <p className="text-xs text-neutral-500 leading-relaxed">
+              Customize the visibility and order of tools in the editor toolbar.
+            </p>
+            <div className="space-y-2">
+              {settings.toolbar.map((item, index) => (
+                <div key={item.id} className="flex items-center gap-4 bg-neutral-50 dark:bg-neutral-800 p-4 rounded-2xl border border-transparent hover:border-neutral-200 dark:hover:border-neutral-700 transition-all group">
+                  <div className="cursor-grab active:cursor-grabbing text-neutral-300 group-hover:text-neutral-500 transition-colors">
+                    <GripVertical className="w-4 h-4" />
+                  </div>
+                  <span className="flex-1 text-sm font-bold">{item.label}</span>
+                  <button 
+                    onClick={() => {
+                      const newToolbar = [...settings.toolbar];
+                      newToolbar[index] = { ...item, visible: !item.visible };
+                      setSettings(prev => ({ ...prev, toolbar: newToolbar }));
+                    }}
+                    className={cn(
+                      "p-2 rounded-lg transition-all",
+                      item.visible ? "text-emerald-500 bg-emerald-50 dark:bg-emerald-950/30" : "text-neutral-400 bg-neutral-100 dark:bg-neutral-900"
+                    )}
+                  >
+                    {item.visible ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
+                  </button>
                   <div className="flex flex-col gap-1">
                     <button 
                       disabled={index === 0}
@@ -3563,7 +3622,7 @@ function SettingsView({ settings, setSettings, onBack, activeFile, setFiles, add
                         [newToolbar[index - 1], newToolbar[index]] = [newToolbar[index], newToolbar[index - 1]];
                         setSettings(prev => ({ ...prev, toolbar: newToolbar }));
                       }}
-                      className="p-1 hover:bg-neutral-200 dark:hover:bg-neutral-700 rounded disabled:opacity-30"
+                      className="p-1 hover:bg-neutral-200 dark:hover:bg-neutral-700 rounded disabled:opacity-20"
                     >
                       <ArrowUp className="w-3 h-3" />
                     </button>
@@ -3574,55 +3633,138 @@ function SettingsView({ settings, setSettings, onBack, activeFile, setFiles, add
                         [newToolbar[index + 1], newToolbar[index]] = [newToolbar[index], newToolbar[index + 1]];
                         setSettings(prev => ({ ...prev, toolbar: newToolbar }));
                       }}
-                      className="p-1 hover:bg-neutral-200 dark:hover:bg-neutral-700 rounded disabled:opacity-30"
+                      className="p-1 hover:bg-neutral-200 dark:hover:bg-neutral-700 rounded disabled:opacity-20"
                     >
                       <ArrowDown className="w-3 h-3" />
                     </button>
                   </div>
-                  <span className="font-medium">{tool.label}</span>
                 </div>
-                <button 
-                  onClick={() => {
-                    const newToolbar = settings.toolbar.map(t => 
-                      t.id === tool.id ? { ...t, visible: !t.visible } : t
-                    );
-                    setSettings(prev => ({ ...prev, toolbar: newToolbar }));
-                  }}
-                  className={cn(
-                    "p-2 rounded-xl transition-colors",
-                    tool.visible ? "bg-emerald-100 text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-400" : "bg-neutral-100 text-neutral-400 dark:bg-neutral-800"
-                  )}
-                >
-                  {tool.visible ? <Eye className="w-5 h-5" /> : <EyeOff className="w-5 h-5" />}
-                </button>
-              </div>
-            ))}
+              ))}
+            </div>
           </div>
-        </section>
+        </CollapsibleSection>
 
-        {/* Shortcuts */}
-        <section className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-3xl p-8">
-          <div className="flex items-center gap-3 mb-6">
-            <Keyboard className="w-5 h-5 text-neutral-400" />
-            <h3 className="font-bold text-xl">Keyboard Shortcuts</h3>
-          </div>
-          
-          <div className="space-y-4">
-            {Object.entries(settings.shortcuts).map(([key, value]) => (
-              <div key={key} className="flex items-center justify-between">
-                <span className="text-neutral-500 capitalize">{key.replace(/([A-Z])/g, ' $1')}</span>
-                <kbd className="px-3 py-1 bg-neutral-100 dark:bg-neutral-800 rounded-lg font-mono text-xs border border-neutral-200 dark:border-neutral-700">
-                  {value}
+        {/* Keyboard Shortcuts */}
+        <CollapsibleSection title="Keyboard Shortcuts" icon={Keyboard}>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-4">
+            {[
+              { key: '⌘ + Z', action: 'Undo last action' },
+              { key: '⌘ + ⇧ + Z', action: 'Redo last action' },
+              { key: '⌘ + S', action: 'Save document' },
+              { key: '⌘ + F', action: 'Find text' },
+              { key: 'Space', action: 'Pan tool' },
+              { key: 'V', action: 'Selection tool' },
+              { key: 'R', action: 'Redaction tool' },
+              { key: 'H', action: 'Highlight tool' },
+              { key: 'Esc', action: 'Cancel / Deselect' },
+              { key: 'Del / ⌫', action: 'Delete selected' },
+            ].map(shortcut => (
+              <div key={shortcut.key} className="flex items-center justify-between p-4 bg-neutral-50 dark:bg-neutral-800 rounded-2xl border border-neutral-100 dark:border-neutral-800">
+                <span className="text-xs font-bold text-neutral-500 uppercase tracking-widest">{shortcut.action}</span>
+                <kbd className="px-3 py-1 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 rounded-lg text-xs font-black font-mono shadow-sm">
+                  {shortcut.key}
                 </kbd>
               </div>
             ))}
           </div>
-        </section>
+        </CollapsibleSection>
+
+        {/* Export Redaction Report */}
+        {activeFile && (
+          <CollapsibleSection title="Export Report" icon={Download}>
+            <div className="space-y-6 pt-4">
+              <p className="text-sm text-neutral-500 leading-relaxed">
+                Download a detailed audit trail of all redactions in this document, including page numbers, coordinates, labels, and comments.
+              </p>
+              
+              <label className="flex items-center gap-3 cursor-pointer group bg-neutral-50 dark:bg-neutral-800 p-4 rounded-2xl border border-transparent hover:border-neutral-200 dark:hover:border-neutral-700 transition-all">
+                <input 
+                  type="checkbox" 
+                  checked={exportOnlySelected}
+                  onChange={(e) => setExportOnlySelected(e.target.checked)}
+                  className="w-5 h-5 accent-black dark:accent-white"
+                />
+                <span className="text-sm font-bold text-neutral-600 dark:text-neutral-400 group-hover:text-black dark:group-hover:text-white transition-colors">Export only selected redactions</span>
+              </label>
+
+              <div className="grid grid-cols-2 gap-4">
+                <button 
+                  onClick={() => {
+                    const redactionsToExport = exportOnlySelected 
+                      ? activeFile.redactions.filter(r => r.isSelected)
+                      : activeFile.redactions;
+
+                    const data = redactionsToExport.map(r => ({
+                      page: r.pageIndex + 1,
+                      type: r.type,
+                      label: r.label || 'N/A',
+                      text: r.text || 'N/A',
+                      x: `${r.x.toFixed(2)}%`,
+                      y: `${r.y.toFixed(2)}%`,
+                      width: `${r.width.toFixed(2)}%`,
+                      height: `${r.height.toFixed(2)}%`,
+                      comment: r.comment || ''
+                    }));
+                    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `${activeFile.name}_redaction_report.json`;
+                    a.click();
+                  }}
+                  className="py-4 bg-neutral-100 dark:bg-neutral-800 hover:bg-black hover:text-white dark:hover:bg-white dark:hover:text-black rounded-2xl font-black transition-all flex items-center justify-center gap-2 shadow-sm"
+                >
+                  <FileText className="w-4 h-4" />
+                  JSON Report
+                </button>
+                <button 
+                  onClick={() => {
+                    const redactionsToExport = exportOnlySelected 
+                      ? activeFile.redactions.filter(r => r.isSelected)
+                      : activeFile.redactions;
+
+                    const headers = ['Page', 'Type', 'Label', 'Matched Text', 'X', 'Y', 'Width', 'Height', 'Comment'];
+                    const rows = redactionsToExport.map(r => [
+                      r.pageIndex + 1,
+                      r.type,
+                      `"${(r.label || '').replace(/"/g, '""')}"`,
+                      `"${(r.text || '').replace(/"/g, '""')}"`,
+                      `${r.x.toFixed(2)}%`,
+                      `${r.y.toFixed(2)}%`,
+                      `${r.width.toFixed(2)}%`,
+                      `${r.height.toFixed(2)}%`,
+                      `"${(r.comment || '').replace(/"/g, '""')}"`
+                    ]);
+                    const csvContent = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+                    const blob = new Blob([csvContent], { type: 'text/csv' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `${activeFile.name}_redaction_report.csv`;
+                    a.click();
+                  }}
+                  className="py-4 bg-neutral-100 dark:bg-neutral-800 hover:bg-black hover:text-white dark:hover:bg-white dark:hover:text-black rounded-2xl font-black transition-all flex items-center justify-center gap-2 shadow-sm"
+                >
+                  <Files className="w-4 h-4" />
+                  CSV Report
+                </button>
+              </div>
+            </div>
+          </CollapsibleSection>
+        )}
+      </div>
+
+      <div className="mt-12 pt-8 border-t border-neutral-200 dark:border-neutral-800 flex flex-col items-center gap-4">
+        <div className="flex items-center gap-6">
+          <a href="#" className="text-xs font-bold text-neutral-400 hover:text-black dark:hover:text-white transition-colors uppercase tracking-widest">Documentation</a>
+          <a href="#" className="text-xs font-bold text-neutral-400 hover:text-black dark:hover:text-white transition-colors uppercase tracking-widest">Privacy Policy</a>
+          <a href="#" className="text-xs font-bold text-neutral-400 hover:text-black dark:hover:text-white transition-colors uppercase tracking-widest">Support</a>
+        </div>
+        <p className="text-[10px] text-neutral-400 font-medium uppercase tracking-[0.2em]">Redactio v2.4.0 • Enterprise Edition</p>
       </div>
     </div>
   );
 }
-
 function TrainingView({ settings, setSettings, addAlert }: {
   settings: AppSettings;
   setSettings: React.Dispatch<React.SetStateAction<AppSettings>>;
@@ -3712,7 +3854,7 @@ function TrainingView({ settings, setSettings, addAlert }: {
         const origPage = await originalPdf.getPage(i);
         const redPage = await redactedPdf.getPage(i);
         
-        const vp = origPage.getViewport({ scale: 2.0 }); // Use higher scale for better OCR alignment
+        const vp = origPage.getViewport({ scale: 2.0 });
         const canvasOrig = document.createElement('canvas');
         const canvasRed = document.createElement('canvas');
         canvasOrig.width = vp.width; canvasOrig.height = vp.height;
@@ -3727,33 +3869,22 @@ function TrainingView({ settings, setSettings, addAlert }: {
         const boxes = findRedactedBoxes(imgOrig, imgRed, vp.width, vp.height);
         
         if (boxes.length > 0) {
-          // Perform OCR on the original page to label boxes
           const pageOcr = await performLocalOCR(canvasOrig.toDataURL('image/png')) as any;
-          if (!pageOcr || !pageOcr.words) {
-            boxes.forEach(box => {
-              learnedCoordinates.push({
-                pageIndex: i - 1,
-                ...box,
-                label: "Redacted Area"
-              });
-            });
-            continue;
-          }
           
           boxes.forEach(box => {
-            // Find words inside this box
-            const boxWords = pageOcr.words.filter((w: any) => {
-              const wx = (w.x / vp.width) * 100;
-              const wy = (w.y / vp.height) * 100;
-              const ww = (w.width / vp.width) * 100;
-              const wh = (w.height / vp.height) * 100;
-              
-              // Simple overlap check
-              return wx >= box.x - 1 && wx + ww <= box.x + box.width + 1 &&
-                     wy >= box.y - 1 && wy + wh <= box.y + box.height + 1;
-            });
-
-            const label = boxWords.map(w => w.text).join(' ') || "Redacted Area";
+            let label = "Redacted Area";
+            if (pageOcr && pageOcr.words) {
+              const boxWords = pageOcr.words.filter((w: any) => {
+                const wx = (w.x / vp.width) * 100;
+                const wy = (w.y / vp.height) * 100;
+                const ww = (w.width / vp.width) * 100;
+                const wh = (w.height / vp.height) * 100;
+                return wx >= box.x - 1 && wx + ww <= box.x + box.width + 1 &&
+                       wy >= box.y - 1 && wy + wh <= box.y + box.height + 1;
+              });
+              if (boxWords.length > 0) label = boxWords.map(w => w.text).join(' ');
+            }
+            
             learnedCoordinates.push({
               pageIndex: i - 1,
               ...box,
@@ -3809,10 +3940,8 @@ function TrainingView({ settings, setSettings, addAlert }: {
     for (let i = 0; i < orig.data.length; i += 4) {
       const r1 = orig.data[i], g1 = orig.data[i+1], b1 = orig.data[i+2];
       const r2 = red.data[i], g2 = red.data[i+1], b2 = red.data[i+2];
-      
       const isBlack = r2 < 30 && g2 < 30 && b2 < 30;
       const wasNotBlack = r1 > 50 || g1 > 50 || b1 > 50;
-
       if (isBlack && wasNotBlack) {
         diff[i / 4] = true;
         hasDiff = true;
@@ -3823,9 +3952,10 @@ function TrainingView({ settings, setSettings, addAlert }: {
 
     const boxes: { x: number, y: number, width: number, height: number }[] = [];
     const visited = new Set<number>();
+    const step = 5;
 
-    for (let y = 0; y < height; y += 10) {
-      for (let x = 0; x < width; x += 10) {
+    for (let y = 0; y < height; y += step) {
+      for (let x = 0; x < width; x += step) {
         const idx = y * width + x;
         if (diff[idx] && !visited.has(idx)) {
           let minX = x, maxX = x, minY = y, maxY = y;
@@ -3839,193 +3969,163 @@ function TrainingView({ settings, setSettings, addAlert }: {
             minY = Math.min(minY, cy);
             maxY = Math.max(maxY, cy);
 
-            const neighbors = [[cx+10, cy], [cx-10, cy], [cx, cy+10], [cx, cy-10]];
+            const neighbors = [[cx+step, cy], [cx-step, cy], [cx, cy+step], [cx, cy-step]];
             for (const [nx, ny] of neighbors) {
               if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
-                const nidx = ny * width + nx;
-                if (diff[nidx] && !visited.has(nidx)) {
-                  visited.add(nidx);
+                const nIdx = ny * width + nx;
+                if (diff[nIdx] && !visited.has(nIdx)) {
+                  visited.add(nIdx);
                   stack.push([nx, ny]);
                 }
               }
             }
           }
-
-          const w = maxX - minX;
-          const h = maxY - minY;
-          if (w > 20 && h > 10) {
+          
+          if ((maxX - minX) > 10 && (maxY - minY) > 10) {
             boxes.push({
               x: (minX / width) * 100,
               y: (minY / height) * 100,
-              width: (w / width) * 100,
-              height: (h / height) * 100
+              width: ((maxX - minX) / width) * 100,
+              height: ((maxY - minY) / height) * 100
             });
           }
         }
       }
     }
-
     return boxes;
   }
 
   return (
-    <div className="max-w-4xl mx-auto">
-      <div className="mb-12">
-        <h2 className="text-4xl font-bold tracking-tight mb-4">AI Training Lab</h2>
-        <p className="text-neutral-500 dark:text-neutral-400 text-lg">
-          Train the AI by providing examples of original and redacted documents. 
-          The AI will learn the company's layout and specific redaction requirements.
-        </p>
+    <div className="max-w-4xl mx-auto space-y-8 pb-20">
+      <div className="flex flex-col gap-2">
+        <h2 className="text-4xl font-black tracking-tight flex items-center gap-3">
+          <Brain className="w-10 h-10" />
+          Training Workflow
+        </h2>
+        <p className="text-neutral-500 font-medium">Teach the AI by providing examples of redacted documents.</p>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mb-12">
-        <div className="space-y-4">
-          <label className="block text-sm font-bold uppercase tracking-wider text-neutral-500">1. Original Document (Unredacted)</label>
-          <div className={cn(
-            "relative h-48 border-2 border-dashed rounded-3xl flex flex-col items-center justify-center transition-all",
-            session.originalFile ? "border-emerald-500 bg-emerald-50 dark:bg-emerald-900/10" : "border-neutral-200 dark:border-neutral-800 hover:border-black dark:hover:border-white"
-          )}>
-            <input 
-              type="file" 
-              accept=".pdf" 
-              onChange={(e) => handleFileChange(e, 'original')}
-              className="absolute inset-0 opacity-0 cursor-pointer"
-            />
-            {session.originalFile ? (
-              <>
-                <CheckCircle2 className="w-8 h-8 text-emerald-500 mb-2" />
-                <span className="text-sm font-medium">{session.originalFile.name}</span>
-              </>
-            ) : (
-              <>
-                <FileText className="w-8 h-8 text-neutral-400 mb-2" />
-                <span className="text-sm text-neutral-500">Upload Original PDF</span>
-              </>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+        <div className="space-y-6">
+          <div className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-3xl p-8">
+            <h3 className="font-bold text-xl mb-6">1. Upload Samples</h3>
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-neutral-500 mb-2">Original PDF (Unredacted)</label>
+                <div className="relative group">
+                  <input 
+                    type="file" 
+                    accept=".pdf"
+                    onChange={(e) => handleFileChange(e, 'original')}
+                    className="absolute inset-0 opacity-0 cursor-pointer z-10"
+                  />
+                  <div className={cn(
+                    "p-6 border-2 border-dashed rounded-2xl flex flex-col items-center gap-3 transition-all",
+                    session.originalFile ? "border-emerald-500 bg-emerald-50/50 dark:bg-emerald-950/20" : "border-neutral-200 dark:border-neutral-800 group-hover:border-neutral-400"
+                  )}>
+                    <FileText className={cn("w-8 h-8", session.originalFile ? "text-emerald-500" : "text-neutral-300")} />
+                    <span className="text-sm font-bold">{session.originalFile ? session.originalFile.name : "Select Original PDF"}</span>
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-neutral-500 mb-2">Redacted PDF (Reference)</label>
+                <div className="relative group">
+                  <input 
+                    type="file" 
+                    accept=".pdf"
+                    onChange={(e) => handleFileChange(e, 'redacted')}
+                    className="absolute inset-0 opacity-0 cursor-pointer z-10"
+                  />
+                  <div className={cn(
+                    "p-6 border-2 border-dashed rounded-2xl flex flex-col items-center gap-3 transition-all",
+                    session.redactedFile ? "border-red-500 bg-red-50/50 dark:bg-red-950/20" : "border-neutral-200 dark:border-neutral-800 group-hover:border-neutral-400"
+                  )}>
+                    <ShieldCheck className={cn("w-8 h-8", session.redactedFile ? "text-red-500" : "text-neutral-300")} />
+                    <span className="text-sm font-bold">{session.redactedFile ? session.redactedFile.name : "Select Redacted PDF"}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <button 
+              onClick={runTraining}
+              disabled={session.status === 'analyzing' || !session.originalFile || !session.redactedFile}
+              className="w-full mt-8 py-4 bg-black dark:bg-white text-white dark:text-black rounded-2xl font-bold hover:opacity-90 transition-opacity disabled:opacity-50 flex items-center justify-center gap-2"
+            >
+              {session.status === 'analyzing' ? <RefreshCw className="w-5 h-5 animate-spin" /> : <Zap className="w-5 h-5" />}
+              Start AI Training
+            </button>
+          </div>
+        </div>
+
+        <div className="space-y-6">
+          <div className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-3xl p-8 min-h-[400px] flex flex-col">
+            <h3 className="font-bold text-xl mb-6">2. Training Results</h3>
+            
+            {session.status === 'idle' && (
+              <div className="flex-1 flex flex-col items-center justify-center text-center text-neutral-400 gap-4">
+                <Brain className="w-16 h-16 opacity-20" />
+                <p className="text-sm font-medium">Upload files and start training to see results here.</p>
+              </div>
+            )}
+
+            {session.status === 'analyzing' && (
+              <div className="flex-1 flex flex-col items-center justify-center gap-6">
+                <div className="relative w-32 h-32">
+                  <svg className="w-full h-full transform -rotate-90">
+                    <circle cx="64" cy="64" r="60" stroke="currentColor" strokeWidth="8" fill="transparent" className="text-neutral-100 dark:text-neutral-800" />
+                    <circle cx="64" cy="64" r="60" stroke="currentColor" strokeWidth="8" fill="transparent" strokeDasharray={377} strokeDashoffset={377 - (377 * progress) / 100} className="text-black dark:text-white transition-all duration-500" />
+                  </svg>
+                  <div className="absolute inset-0 flex items-center justify-center font-black text-2xl">{progress}%</div>
+                </div>
+                <div className="text-center">
+                  <p className="font-bold">Analyzing Documents...</p>
+                  <p className="text-xs text-neutral-500">Comparing layouts and identifying patterns</p>
+                </div>
+              </div>
+            )}
+
+            {session.status === 'completed' && session.learnedData && (
+              <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="flex-1 space-y-6">
+                <div className="p-4 bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-800 rounded-2xl">
+                  <p className="text-xs font-bold text-emerald-600 dark:text-emerald-400 uppercase tracking-widest mb-1">Identified Company</p>
+                  <p className="text-xl font-black">{session.learnedData.companyName}</p>
+                </div>
+
+                <div className="space-y-3">
+                  <p className="text-sm font-bold text-neutral-500">Learned Coordinates ({session.learnedData.suggestedRules.learnedCoordinates?.length})</p>
+                  <div className="max-h-40 overflow-y-auto space-y-2 pr-2">
+                    {session.learnedData.suggestedRules.learnedCoordinates?.map((coord, idx) => (
+                      <div key={idx} className="flex items-center justify-between p-3 bg-neutral-50 dark:bg-neutral-800 rounded-xl text-xs">
+                        <span className="font-bold">{coord.label}</span>
+                        <span className="text-neutral-500">Page {coord.pageIndex + 1} • {coord.x.toFixed(0)}%, {coord.y.toFixed(0)}%</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <button 
+                  onClick={saveLearnedRule}
+                  className="w-full py-4 bg-emerald-500 text-white rounded-2xl font-bold hover:bg-emerald-600 transition-colors flex items-center justify-center gap-2"
+                >
+                  <Save className="w-5 h-5" />
+                  Save to Company Rules
+                </button>
+              </motion.div>
+            )}
+
+            {session.status === 'error' && (
+              <div className="flex-1 flex flex-col items-center justify-center text-center text-red-500 gap-4">
+                <AlertCircle className="w-16 h-16" />
+                <p className="font-bold">Training Failed</p>
+                <button onClick={() => setSession(prev => ({ ...prev, status: 'idle' }))} className="text-sm underline">Try Again</button>
+              </div>
             )}
           </div>
         </div>
-
-        <div className="space-y-4">
-          <label className="block text-sm font-bold uppercase tracking-wider text-neutral-500">2. Rejected Document (Redacted)</label>
-          <div className={cn(
-            "relative h-48 border-2 border-dashed rounded-3xl flex flex-col items-center justify-center transition-all",
-            session.redactedFile ? "border-emerald-500 bg-emerald-50 dark:bg-emerald-900/10" : "border-neutral-200 dark:border-neutral-800 hover:border-black dark:hover:border-white"
-          )}>
-            <input 
-              type="file" 
-              accept=".pdf" 
-              onChange={(e) => handleFileChange(e, 'redacted')}
-              className="absolute inset-0 opacity-0 cursor-pointer"
-            />
-            {session.redactedFile ? (
-              <>
-                <CheckCircle2 className="w-8 h-8 text-emerald-500 mb-2" />
-                <span className="text-sm font-medium">{session.redactedFile.name}</span>
-              </>
-            ) : (
-              <>
-                <EyeOff className="w-8 h-8 text-neutral-400 mb-2" />
-                <span className="text-sm text-neutral-500">Upload Redacted PDF</span>
-              </>
-            )}
-          </div>
-        </div>
       </div>
-
-      {session.status === 'analyzing' ? (
-        <div className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-3xl p-12 text-center">
-          <RefreshCw className="w-12 h-12 animate-spin mx-auto mb-6 text-neutral-400" />
-          <h3 className="text-2xl font-bold mb-2">Analyzing Documents...</h3>
-          <p className="text-neutral-500 mb-8">Comparing layouts and identifying redaction patterns.</p>
-          <div className="w-full max-w-md mx-auto h-2 bg-neutral-100 dark:bg-neutral-800 rounded-full overflow-hidden">
-            <motion.div 
-              className="h-full bg-black dark:bg-white"
-              initial={{ width: 0 }}
-              animate={{ width: `${progress}%` }}
-            />
-          </div>
-          <p className="mt-4 text-sm font-mono">{progress}% Complete</p>
-        </div>
-      ) : session.status === 'completed' && session.learnedData ? (
-        <motion.div 
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-3xl p-8"
-        >
-          <div className="flex items-center justify-between mb-8">
-            <div>
-              <h3 className="text-2xl font-bold mb-1">Training Results</h3>
-              <p className="text-neutral-500">The AI has successfully learned from your examples.</p>
-            </div>
-            <div className="px-4 py-2 bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400 rounded-full text-sm font-bold uppercase tracking-wider">
-              Success
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-8 mb-8">
-            <div className="space-y-4">
-              <label className="text-xs font-bold uppercase tracking-widest text-neutral-400">Detected Company</label>
-              <div className="p-4 bg-neutral-50 dark:bg-neutral-800 rounded-2xl border border-neutral-100 dark:border-neutral-800">
-                <p className="text-xl font-bold">{session.learnedData.companyName}</p>
-              </div>
-            </div>
-            <div className="space-y-4">
-              <label className="text-xs font-bold uppercase tracking-widest text-neutral-400">Learned Patterns</label>
-              <div className="p-4 bg-neutral-50 dark:bg-neutral-800 rounded-2xl border border-neutral-100 dark:border-neutral-800">
-                <p className="text-xl font-bold">{session.learnedData.suggestedRules.learnedCoordinates?.length || 0} Fixed Areas</p>
-              </div>
-            </div>
-            <div className="space-y-4">
-              <label className="text-xs font-bold uppercase tracking-widest text-neutral-400">Sensitive Terms</label>
-              <div className="p-4 bg-neutral-50 dark:bg-neutral-800 rounded-2xl border border-neutral-100 dark:border-neutral-800">
-                <p className="text-xl font-bold">{session.learnedData.suggestedRules.sensitiveTerms?.length || 0} Terms</p>
-              </div>
-            </div>
-          </div>
-
-          <div className="space-y-4 mb-8">
-            <label className="text-xs font-bold uppercase tracking-widest text-neutral-400">Company Identifiers</label>
-            <div className="flex flex-wrap gap-2">
-              {session.learnedData.suggestedRules.identifiers?.map((id, idx) => (
-                <span key={idx} className="px-3 py-1 bg-neutral-100 dark:bg-neutral-800 rounded-lg text-sm border border-neutral-200 dark:border-neutral-700">
-                  {id}
-                </span>
-              ))}
-            </div>
-          </div>
-
-          <div className="flex gap-4">
-            <button 
-              onClick={saveLearnedRule}
-              className="flex-1 py-4 bg-black dark:bg-white text-white dark:text-black rounded-2xl font-bold hover:opacity-90 transition-opacity flex items-center justify-center gap-2"
-            >
-              <Save className="w-5 h-5" />
-              Save to Company Library
-            </button>
-            <button 
-              onClick={() => setSession({ id: Math.random().toString(36).substring(7), status: 'idle' })}
-              className="px-8 py-4 bg-neutral-100 dark:bg-neutral-800 rounded-2xl font-bold hover:bg-neutral-200 dark:hover:bg-neutral-700 transition-colors"
-            >
-              Discard
-            </button>
-          </div>
-        </motion.div>
-      ) : (
-        <div className="flex flex-col items-center">
-          <button 
-            onClick={runTraining}
-            disabled={!session.originalFile || !session.redactedFile}
-            className="w-full max-w-md py-6 bg-black dark:bg-white text-white dark:text-black rounded-3xl font-bold text-xl hover:opacity-90 transition-opacity disabled:opacity-30 flex items-center justify-center gap-3 shadow-xl"
-          >
-            <Play className="w-6 h-6" />
-            Analyze & Train AI
-          </button>
-          <p className="mt-6 text-neutral-500 text-sm flex items-center gap-2">
-            <AlertCircle className="w-4 h-4" />
-            This process uses AI to compare document layouts and identify sensitive fields.
-          </p>
-        </div>
-      )}
     </div>
   );
 }

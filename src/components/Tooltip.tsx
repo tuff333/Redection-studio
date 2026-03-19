@@ -1,16 +1,16 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '../lib/utils';
 
 interface TooltipProps {
   children: React.ReactNode;
   title: string;
-  description: string;
+  description?: string;
   shortcut?: string;
   side?: 'top' | 'bottom' | 'left' | 'right';
 }
 
-export function Tooltip({ children, title, description, shortcut, side = 'bottom' }: TooltipProps) {
+export function Tooltip({ children, title, description = '', shortcut, side = 'bottom' }: TooltipProps) {
   const [isVisible, setIsVisible] = useState(false);
   const timeoutRef = useRef<NodeJS.Timeout | null>(null);
 

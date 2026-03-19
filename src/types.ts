@@ -7,7 +7,7 @@ export interface RedactionBox {
   height: number; // percentage
   text?: string;
   label?: string;
-  type: 'text' | 'box' | 'auto' | 'highlight';
+  type: 'text' | 'box' | 'auto' | 'highlight' | 'manual';
   path?: string; // For freeform shapes (SVG path data in percentages)
   isSelected: boolean;
   comment?: string;
@@ -66,6 +66,8 @@ export interface CompanyRule {
   id: string;
   name: string;
   patterns: string[]; // Regex patterns
+  type?: 'regex' | 'keyword' | 'coordinate';
+  isActive?: boolean;
   sensitiveTerms: string[];
   learnedCoordinates?: {
     pageIndex: number;
