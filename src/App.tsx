@@ -198,6 +198,11 @@ const DEFAULT_SETTINGS: AppSettings = {
     textTool: 't',
     boxTool: 'b',
     highlightTool: 'h',
+    selectionTool: 'v',
+    autoDetect: 'a',
+    ocr: 'o',
+    applyRedactions: 'Enter',
+    toggleReview: 'r',
   }
 };
 
@@ -609,6 +614,7 @@ function EditorView({ file, settings, setSettings, onBack, setView, addAlert, se
   } | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [isReviewMode, setIsReviewMode] = useState(false);
+  const [hoveredOCR, setHoveredOCR] = useState<OCRResult | null>(null);
   const [auditLogs, setAuditLogs] = useState<{ id: string; action: string; timestamp: Date; details?: string }[]>([]);
 
   const addAuditLog = (action: string, details?: string) => {
@@ -1235,32 +1241,46 @@ function EditorView({ file, settings, setSettings, onBack, setView, addAlert, se
 
       const key = e.key.toLowerCase();
       const ctrl = e.ctrlKey || e.metaKey;
+      const shift = e.shiftKey;
 
-      if (ctrl && key === 'z') {
+      const check = (shortcut: string) => {
+        if (!shortcut) return false;
+        const parts = shortcut.toLowerCase().split('+');
+        const hasCtrl = parts.includes('ctrl') || parts.includes('meta');
+        const hasShift = parts.includes('shift');
+        const mainKey = parts[parts.length - 1];
+        return ctrl === hasCtrl && shift === hasShift && key === mainKey;
+      };
+
+      if (check(settings.shortcuts.undo)) {
         e.preventDefault();
         undo();
-      } else if (ctrl && key === 'y') {
+      } else if (check(settings.shortcuts.redo)) {
         e.preventDefault();
         redo();
-      } else if (ctrl && key === 'f') {
+      } else if (check(settings.shortcuts.search)) {
         e.preventDefault();
         setShowSearchPopup(true);
-      } else if (key === 'v') {
+      } else if (check(settings.shortcuts.selectionTool)) {
         setTool('selection');
-      } else if (key === 't') {
+      } else if (check(settings.shortcuts.textTool)) {
         setTool('text');
-      } else if (key === 'b') {
+      } else if (check(settings.shortcuts.boxTool)) {
         setTool('box');
-      } else if (key === 'h') {
+      } else if (check(settings.shortcuts.highlightTool)) {
         setTool('highlight');
-      } else if (key === 'a') {
+      } else if (check(settings.shortcuts.autoDetect)) {
         handleAutoDetect();
-      } else if (key === 'o') {
+      } else if (check(settings.shortcuts.ocr)) {
         handleOCR();
-      } else if (key === 'arrowright') {
+      } else if (check(settings.shortcuts.nextPage)) {
         setPageNumber(p => Math.min(numPages, p + 1));
-      } else if (key === 'arrowleft') {
+      } else if (check(settings.shortcuts.prevPage)) {
         setPageNumber(p => Math.max(1, p - 1));
+      } else if (check(settings.shortcuts.applyRedactions)) {
+        setShowConfirmApply(true);
+      } else if (check(settings.shortcuts.toggleReview)) {
+        setIsReviewMode(prev => !prev);
       } else if (key === 'escape') {
         setShowSearchPopup(false);
         setTool('selection');
@@ -1269,7 +1289,7 @@ function EditorView({ file, settings, setSettings, onBack, setView, addAlert, se
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [historyIndex, history, numPages, isProcessing, ocrStatus]);
+  }, [historyIndex, history, numPages, isProcessing, ocrStatus, settings.shortcuts]);
 
   const handleZoomIn = () => setScale(s => Math.min(3, s + 0.1));
   const handleZoomOut = () => setScale(s => Math.max(0.5, s - 0.1));
@@ -1796,6 +1816,25 @@ function EditorView({ file, settings, setSettings, onBack, setView, addAlert, se
                   </svg>
                 )}
 
+                {/* OCR Hover Highlight */}
+                {hoveredOCR && (
+                  <motion.div
+                    initial={{ opacity: 0, scale: 0.9 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    className="absolute border-2 border-emerald-500 bg-emerald-500/10 z-20"
+                    style={{
+                      left: `${hoveredOCR.x}%`,
+                      top: `${hoveredOCR.y}%`,
+                      width: `${hoveredOCR.width}%`,
+                      height: `${hoveredOCR.height}%`
+                    }}
+                  >
+                    <div className="absolute -top-6 left-0 bg-emerald-500 text-white text-[8px] font-bold px-2 py-1 rounded whitespace-nowrap">
+                      OCR: {hoveredOCR.text}
+                    </div>
+                  </motion.div>
+                )}
+
                 {/* Search Highlights */}
                 {tempHighlights.filter(h => h.pageIndex === pageNumber - 1).map((h, i) => (
                   <motion.div
@@ -2103,30 +2142,37 @@ function EditorView({ file, settings, setSettings, onBack, setView, addAlert, se
                     </div>
                   ) : (
                     ocrResults[pageNumber - 1].map((res, i) => (
-                      <div key={i} className="p-2 bg-neutral-50 dark:bg-neutral-800 rounded-lg border border-neutral-100 dark:border-neutral-800 flex items-center justify-between gap-2 group">
-                        <span className="text-[10px] truncate flex-1">{res.text}</span>
-                        <button 
-                          onClick={() => {
-                            const newRedaction: RedactionBox = {
-                              id: Math.random().toString(36).substring(7),
-                              pageIndex: pageNumber - 1,
-                              x: res.x,
-                              y: res.y,
-                              width: res.width,
-                              height: res.height,
-                              text: res.text,
-                              label: 'OCR',
-                              type: 'text',
-                              isSelected: true,
-                            };
-                            const updated = [...redactions, newRedaction];
-                            setRedactions(updated);
-                            addToHistory(updated);
-                          }}
-                          className="p-1 bg-neutral-200 dark:bg-neutral-700 rounded opacity-0 group-hover:opacity-100 transition-opacity"
-                        >
-                          <Zap className="w-3 h-3" />
-                        </button>
+                      <div 
+                        key={i} 
+                        onMouseEnter={() => setHoveredOCR(res)}
+                        onMouseLeave={() => setHoveredOCR(null)}
+                        className="p-2 bg-neutral-50 dark:bg-neutral-800 rounded-lg border border-neutral-100 dark:border-neutral-800 flex items-center justify-between gap-2 group hover:border-black dark:hover:border-white transition-all cursor-pointer"
+                        onClick={() => {
+                          const newRedaction: RedactionBox = {
+                            id: Math.random().toString(36).substring(7),
+                            pageIndex: pageNumber - 1,
+                            x: res.x,
+                            y: res.y,
+                            width: res.width,
+                            height: res.height,
+                            text: res.text,
+                            label: 'OCR',
+                            type: 'text',
+                            isSelected: true,
+                          };
+                          const updated = [...redactions, newRedaction];
+                          setRedactions(updated);
+                          addToHistory(updated);
+                          addAuditLog('OCR Redaction', `Redacted text: ${res.text}`);
+                        }}
+                      >
+                        <div className="flex flex-col gap-1 flex-1 min-w-0">
+                          <span className="text-[10px] font-bold truncate">{res.text}</span>
+                          <span className="text-[8px] text-neutral-400 font-mono">
+                            X: {res.x.toFixed(1)}% Y: {res.y.toFixed(1)}%
+                          </span>
+                        </div>
+                        <Plus className="w-3 h-3 opacity-0 group-hover:opacity-100 transition-opacity" />
                       </div>
                     ))
                   )}
@@ -3038,16 +3084,19 @@ function BatchView({ files, setFiles, settings, setSettings, addAlert }: {
       return;
     }
     const newRule: BatchRuleSet = {
-      id: Math.random().toString(36).substring(7),
+      id: editingPresetId || Math.random().toString(36).substring(7),
       name: ruleName,
       ...batchRules
     };
     setSettings(prev => ({
       ...prev,
-      savedBatchRules: [...prev.savedBatchRules, newRule]
+      savedBatchRules: editingPresetId 
+        ? prev.savedBatchRules.map(r => r.id === editingPresetId ? newRule : r)
+        : [...prev.savedBatchRules, newRule]
     }));
     setRuleName('');
-    addAlert('success', `Rule set "${newRule.name}" saved.`);
+    setEditingPresetId(null);
+    addAlert('success', `Rule set "${ruleName}" ${editingPresetId ? 'updated' : 'saved'}.`);
   };
 
   const loadRuleSet = (rule: BatchRuleSet) => {
@@ -3057,6 +3106,8 @@ function BatchView({ files, setFiles, settings, setSettings, addAlert }: {
       companyDetection: rule.companyDetection || false,
       sensitiveTerms: rule.sensitiveTerms
     });
+    setRuleName(rule.name);
+    setEditingPresetId(rule.id);
     addAlert('info', `Loaded rule set "${rule.name}".`);
   };
 
@@ -3153,19 +3204,7 @@ function BatchView({ files, setFiles, settings, setSettings, addAlert }: {
                     className="flex-1 px-3 py-2 bg-neutral-50 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-xl text-xs outline-none focus:ring-2 focus:ring-black dark:focus:ring-white"
                   />
                   <button 
-                    onClick={() => {
-                      if (editingPresetId) {
-                        const updated = settings.savedBatchRules.map(r => 
-                          r.id === editingPresetId ? { ...r, name: ruleName, ...batchRules } : r
-                        );
-                        setSettings(prev => ({ ...prev, savedBatchRules: updated }));
-                        setEditingPresetId(null);
-                        setRuleName('');
-                        addAlert('success', `Preset "${ruleName}" updated.`);
-                      } else {
-                        saveRuleSet();
-                      }
-                    }}
+                    onClick={saveRuleSet}
                     className="p-2 bg-neutral-100 dark:bg-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-700 rounded-xl transition-colors"
                   >
                     <Save className="w-4 h-4" />
@@ -3894,24 +3933,113 @@ function SettingsView({ settings, setSettings, onBack, activeFile, setFiles, add
         <CollapsibleSection title="Keyboard Shortcuts" icon={Keyboard}>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-4">
             {[
-              { key: '⌘ + Z', action: 'Undo last action' },
-              { key: '⌘ + ⇧ + Z', action: 'Redo last action' },
-              { key: '⌘ + S', action: 'Save document' },
-              { key: '⌘ + F', action: 'Find text' },
-              { key: 'Space', action: 'Pan tool' },
-              { key: 'V', action: 'Selection tool' },
-              { key: 'R', action: 'Redaction tool' },
-              { key: 'H', action: 'Highlight tool' },
-              { key: 'Esc', action: 'Cancel / Deselect' },
-              { key: 'Del / ⌫', action: 'Delete selected' },
+              { label: 'Undo', key: 'undo' },
+              { label: 'Redo', key: 'redo' },
+              { label: 'Search', key: 'search' },
+              { label: 'Next Page', key: 'nextPage' },
+              { label: 'Prev Page', key: 'prevPage' },
+              { label: 'Selection Tool', key: 'selectionTool' },
+              { label: 'Text Tool', key: 'textTool' },
+              { label: 'Box Tool', key: 'boxTool' },
+              { label: 'Highlight Tool', key: 'highlightTool' },
+              { label: 'Auto Detect', key: 'autoDetect' },
+              { label: 'OCR', key: 'ocr' },
+              { label: 'Apply Redactions', key: 'applyRedactions' },
+              { label: 'Toggle Review', key: 'toggleReview' },
             ].map(shortcut => (
               <div key={shortcut.key} className="flex items-center justify-between p-4 bg-neutral-50 dark:bg-neutral-800 rounded-2xl border border-neutral-100 dark:border-neutral-800">
-                <span className="text-xs font-bold text-neutral-500 uppercase tracking-widest">{shortcut.action}</span>
-                <kbd className="px-3 py-1 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 rounded-lg text-xs font-black font-mono shadow-sm">
-                  {shortcut.key}
-                </kbd>
+                <span className="text-xs font-bold text-neutral-500 uppercase tracking-widest">{shortcut.label}</span>
+                <input 
+                  type="text"
+                  value={(settings.shortcuts as any)[shortcut.key]}
+                  onChange={(e) => setSettings(prev => ({
+                    ...prev,
+                    shortcuts: { ...prev.shortcuts, [shortcut.key]: e.target.value }
+                  }))}
+                  className="w-24 px-2 py-1 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 rounded-lg text-xs font-black font-mono shadow-sm text-center focus:ring-2 focus:ring-black dark:focus:ring-white outline-none"
+                />
               </div>
             ))}
+          </div>
+        </CollapsibleSection>
+
+        {/* Custom AI Redaction Rules */}
+        <CollapsibleSection title="Custom AI Redaction Rules" icon={Brain}>
+          <div className="space-y-6 pt-4">
+            <div className="flex items-center justify-between">
+              <p className="text-sm text-neutral-500">Define custom rules for automated redaction based on keywords, regex, or company identifiers.</p>
+              <button 
+                onClick={addCompanyRule}
+                className="flex items-center gap-2 px-4 py-2 bg-black text-white dark:bg-white dark:text-black rounded-xl text-xs font-bold hover:scale-105 transition-all"
+              >
+                <Plus className="w-4 h-4" />
+                Add Rule
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              {(settings.companyRules || []).map(rule => (
+                <div key={rule.id} className="p-6 bg-neutral-50 dark:bg-neutral-800/50 rounded-3xl border border-neutral-100 dark:border-neutral-800 space-y-4">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <input 
+                        type="text" 
+                        value={rule.name}
+                        onChange={(e) => updateCompanyRule(rule.id, { name: e.target.value })}
+                        className="bg-transparent border-none font-black text-lg outline-none focus:ring-2 focus:ring-black dark:focus:ring-white rounded-lg px-2"
+                      />
+                      <button 
+                        onClick={() => updateCompanyRule(rule.id, { isActive: !rule.isActive })}
+                        className={cn(
+                          "px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-widest transition-all",
+                          rule.isActive ? "bg-emerald-100 text-emerald-600 dark:bg-emerald-950/30" : "bg-neutral-200 text-neutral-500 dark:bg-neutral-700"
+                        )}
+                      >
+                        {rule.isActive ? 'Active' : 'Inactive'}
+                      </button>
+                    </div>
+                    <button 
+                      onClick={() => removeCompanyRule(rule.id)}
+                      className="p-2 text-neutral-400 hover:text-red-500 transition-colors"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div>
+                      <label className="block text-[10px] font-black text-neutral-400 uppercase tracking-widest mb-2">Sensitive Terms (comma separated)</label>
+                      <textarea 
+                        value={rule.sensitiveTerms.join(', ')}
+                        onChange={(e) => updateCompanyRule(rule.id, { sensitiveTerms: e.target.value.split(',').map(s => s.trim()).filter(Boolean) })}
+                        className="w-full px-4 py-3 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 rounded-2xl text-xs outline-none focus:ring-2 focus:ring-black dark:focus:ring-white h-24"
+                        placeholder="e.g. Secret, Confidential, Internal"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-black text-neutral-400 uppercase tracking-widest mb-2">Regex Patterns (comma separated)</label>
+                      <textarea 
+                        value={rule.patterns.join(', ')}
+                        onChange={(e) => updateCompanyRule(rule.id, { patterns: e.target.value.split(',').map(s => s.trim()).filter(Boolean) })}
+                        className="w-full px-4 py-3 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 rounded-2xl text-xs outline-none focus:ring-2 focus:ring-black dark:focus:ring-white h-24"
+                        placeholder="e.g. \\d{3}-\\d{2}-\\d{4}, [A-Z]{2}\\d{6}"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] font-black text-neutral-400 uppercase tracking-widest mb-2">Company Identifiers (Keywords to trigger this rule)</label>
+                    <input 
+                      type="text" 
+                      value={rule.identifiers?.join(', ') || ''}
+                      onChange={(e) => updateCompanyRule(rule.id, { identifiers: e.target.value.split(',').map(s => s.trim()).filter(Boolean) })}
+                      className="w-full px-4 py-3 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 rounded-2xl text-xs outline-none focus:ring-2 focus:ring-black dark:focus:ring-white"
+                      placeholder="e.g. Acme Corp, Global Tech"
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         </CollapsibleSection>
 

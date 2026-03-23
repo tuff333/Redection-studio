@@ -133,5 +133,10 @@ export interface AppSettings {
     textTool: string;
     boxTool: string;
     highlightTool: string;
+    selectionTool: string;
+    autoDetect: string;
+    ocr: string;
+    applyRedactions: string;
+    toggleReview: string;
   };
 }
