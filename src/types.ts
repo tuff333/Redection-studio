@@ -85,11 +85,14 @@ export interface TrainingSession {
   id: string;
   originalFile?: File;
   redactedFile?: File;
-  status: 'idle' | 'analyzing' | 'completed' | 'error';
+  status: 'idle' | 'uploading' | 'analyzing' | 'preview' | 'completed' | 'error';
   learnedData?: {
     companyName: string;
     suggestedRules: CompanyRule;
+    detectedRedactions: RedactionBox[];
   };
+  originalUrl?: string;
+  redactedUrl?: string;
 }
 
 export interface AIDetectionConfig {

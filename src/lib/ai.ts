@@ -179,6 +179,74 @@ export async function detectAdvancedAI(text: string, rules?: any, companyProfile
   }
 }
 
+export async function trainModelFromFiles(originalText: string, redactedText?: string): Promise<{ companyName: string; suggestedRules: any; detectedRedactions: any[] }> {
+  try {
+    const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+    
+    const systemInstruction = `
+      You are an AI trainer for a PDF Redaction Tool.
+      Your task is to:
+      1. Identify the company name from the provided text.
+      2. If 'redactedText' is provided, compare it with 'originalText' to identify what was removed.
+      3. Suggest redaction rules (keywords, regex patterns, or specific entity types like "Name", "Address") for this company.
+      4. If 'redactedText' is NOT provided, analyze 'originalText' to suggest what *should* be redacted based on standard PII/sensitive data practices for this type of document.
+      
+      Return a JSON object with:
+      - companyName: string
+      - suggestedRules: { name, patterns, sensitiveTerms, description }
+      - detectedRedactions: array of { text, label, reason }
+    `;
+
+    const prompt = redactedText 
+      ? `Original Text:\n${originalText}\n\nRedacted Text:\n${redactedText}`
+      : `Original Text:\n${originalText}`;
+
+    const response = await ai.models.generateContent({
+      model: "gemini-3-flash-preview",
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+      config: {
+        systemInstruction,
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            companyName: { type: Type.STRING },
+            suggestedRules: {
+              type: Type.OBJECT,
+              properties: {
+                name: { type: Type.STRING },
+                patterns: { type: Type.ARRAY, items: { type: Type.STRING } },
+                sensitiveTerms: { type: Type.ARRAY, items: { type: Type.STRING } },
+                description: { type: Type.STRING }
+              },
+              required: ["name", "patterns", "sensitiveTerms"]
+            },
+            detectedRedactions: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  text: { type: Type.STRING },
+                  label: { type: Type.STRING },
+                  reason: { type: Type.STRING }
+                },
+                required: ["text", "label", "reason"]
+              }
+            }
+          },
+          required: ["companyName", "suggestedRules", "detectedRedactions"]
+        }
+      }
+    });
+
+    if (!response.text) throw new Error("No response from AI");
+    return JSON.parse(response.text);
+  } catch (error) {
+    console.error("Training Error:", error);
+    throw error;
+  }
+}
+
 export async function unlockPDF(pdfBase64: string): Promise<string | null> {
   try {
     const response = await fetch('/api/unlock', {

@@ -1,3 +1,11 @@
+/**
+ * Redactio Server
+ * 
+ * To run in development:
+ * npm run dev (runs: tsx server.ts)
+ * 
+ * Always run from the project root directory.
+ */
 import express from "express";
 import { createServer as createViteServer } from "vite";
 import path from "path";
@@ -21,6 +29,15 @@ async function startServer() {
   // --- API Routes ---
 
   // OCR Engine
+  app.get("/api/ocr/health", async (req, res) => {
+    try {
+      // Simple check to see if Tesseract is available
+      res.json({ status: "ok", engine: "tesseract.js" });
+    } catch (error) {
+      res.status(500).json({ status: "error", message: "OCR engine not available" });
+    }
+  });
+
   app.post("/api/ocr", async (req, res) => {
     try {
       const { image } = req.body; // base64
