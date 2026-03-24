@@ -59,6 +59,19 @@ export function ToolDialog({ tool, onClose, addAlert }: ToolDialogProps) {
             endpoint = '/api/pdf/remove-pages';
             body.indicesToRemove = [0]; // Placeholder: remove first page
             break;
+          case 'Rotate':
+            endpoint = '/api/pdf/rotate';
+            body.rotation = 90;
+            break;
+          case 'Flatten':
+            endpoint = '/api/pdf/flatten';
+            break;
+          case 'Get ALL Info on PDF':
+            endpoint = '/api/pdf/info';
+            break;
+          case 'Unlock PDF Forms':
+            endpoint = '/api/unlock';
+            break;
           default:
             // Generic fallback or simulated success
             await new Promise(resolve => setTimeout(resolve, 1500));
@@ -80,6 +93,11 @@ export function ToolDialog({ tool, onClose, addAlert }: ToolDialogProps) {
         } else if (data.pdfs) {
           setResult(data.pdfs[0]); // Just show the first one for now
           addAlert('success', `${tool.name} completed! (Showing first part)`);
+        } else if (data.info) {
+          console.log('PDF Info:', data.info);
+          addAlert('success', `PDF Info retrieved! Check console for details.`);
+          setIsProcessing(false);
+          return;
         } else {
           throw new Error(data.error || 'Processing failed');
         }

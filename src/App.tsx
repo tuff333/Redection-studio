@@ -18,7 +18,6 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 import { Tooltip } from './components/Tooltip';
 
 import { performLocalOCR, detectPIILocal, detectSensitiveTermsLocal, detectAdvancedAI, unlockPDF, trainModelFromFiles } from './lib/ai';
-import { PublicAPIHub } from './components/PublicAPIHub';
 import { validateDataWithAPI, RECOMMENDED_APIS } from './services/publicApiService';
 import 'react-pdf/dist/Page/AnnotationLayer.css';
 import 'react-pdf/dist/Page/TextLayer.css';
@@ -330,17 +329,6 @@ export default function App() {
         </div>
 
         <div className="flex items-center gap-2">
-          <Tooltip title="Public API Hub" description="Browse and integrate working APIs for redaction." side="bottom">
-            <button 
-              onClick={() => setView('api-hub')}
-              className={cn(
-                "p-2 rounded-lg transition-colors",
-                view === 'api-hub' ? "bg-neutral-200 dark:bg-neutral-800" : "hover:bg-neutral-100 dark:hover:bg-neutral-900"
-              )}
-            >
-              <Globe className="w-5 h-5" />
-            </button>
-          </Tooltip>
           <Tooltip title="AI Training Lab" description="Train the AI with original and redacted documents." side="bottom">
             <button 
               onClick={() => setView('training')}
@@ -568,18 +556,6 @@ export default function App() {
             </motion.div>
           )}
 
-          {view === 'api-hub' && (
-            <motion.div
-              key="api-hub"
-              initial={{ opacity: 0, x: 20 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: -20 }}
-            >
-              <PublicAPIHub 
-                onBack={() => setView(activeFileId ? 'editor' : 'home')} 
-              />
-            </motion.div>
-          )}
         </AnimatePresence>
       </main>
 
@@ -645,7 +621,7 @@ function EditorView({ file, settings, setSettings, onBack, setView, addAlert, se
   const [showConfirmApply, setShowConfirmApply] = useState(false);
   const [showMobileTools, setShowMobileTools] = useState(false);
   const [identifiedCompany, setIdentifiedCompany] = useState<string | null>(null);
-  const [sidebarTab, setSidebarTab] = useState<'redactions' | 'ocr' | 'templates' | 'audit' | 'logs' | 'history' | 'apis' | 'suggestions' | 'report'>('redactions');
+  const [sidebarTab, setSidebarTab] = useState<'redactions' | 'ocr' | 'templates' | 'audit' | 'logs' | 'history' | 'suggestions' | 'report'>('redactions');
   const [aiSuggestions, setAiSuggestions] = useState<RedactionBox[]>([]);
   const [isGeneratingSuggestions, setIsGeneratingSuggestions] = useState(false);
   const [activeInteraction, setActiveInteraction] = useState<{
@@ -1540,7 +1516,7 @@ function EditorView({ file, settings, setSettings, onBack, setView, addAlert, se
       const text = ocrData.text || '';
       const words = ocrData.words || [];
 
-      // 2. Advanced AI Detection (Server-side Gemini)
+      // 2. Advanced AI Detection (Local Engine)
       const advancedDetections = await detectAdvancedAI(text, settings.aiDefaults, settings.companyProfile);
       
       // 3. Company Identification
@@ -2599,48 +2575,6 @@ function EditorView({ file, settings, setSettings, onBack, setView, addAlert, se
                     <p className="text-[10px] font-medium">{state.length} Redactions</p>
                   </button>
                 )).reverse()}
-              </div>
-            )}
-
-            {sidebarTab === 'apis' && (
-              <div className="flex flex-col gap-4 h-full">
-                <div className="p-4 bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-900 rounded-2xl">
-                  <div className="flex items-center gap-2 text-emerald-600 dark:text-emerald-400 mb-2">
-                    <Globe className="w-4 h-4" />
-                    <span className="text-[10px] font-black uppercase tracking-widest">Public API Integration</span>
-                  </div>
-                  <p className="text-[10px] text-emerald-700 dark:text-emerald-500 font-medium leading-relaxed">
-                    Use external APIs to validate data like emails, phones, and addresses before redacting.
-                  </p>
-                  <button 
-                    onClick={() => setView('api-hub')}
-                    className="mt-3 w-full py-2 bg-emerald-600 text-white rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-emerald-700 transition-colors"
-                  >
-                    Open API Hub
-                  </button>
-                </div>
-
-                <div className="flex-1 overflow-auto space-y-2 pr-2 custom-scrollbar">
-                  <h3 className="text-[10px] font-black uppercase tracking-widest text-neutral-400 px-2">Recommended Validators</h3>
-                  {RECOMMENDED_APIS.filter(a => a.relevance >= 9).map(api => (
-                    <div key={api.name} className="p-3 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-xl hover:border-black dark:hover:border-white transition-colors group">
-                      <div className="flex items-center justify-between mb-1">
-                        <span className="text-xs font-black tracking-tight">{api.name}</span>
-                        <div className="flex items-center gap-1">
-                          <Star className="w-2.5 h-2.5 text-amber-500 fill-amber-500" />
-                          <span className="text-[8px] font-black">{api.relevance}/10</span>
-                        </div>
-                      </div>
-                      <p className="text-[10px] text-neutral-500 dark:text-neutral-400 font-medium mb-3 line-clamp-1">{api.description}</p>
-                      <button 
-                        onClick={() => window.open(api.url, '_blank')}
-                        className="w-full py-1.5 border border-neutral-200 dark:border-neutral-800 rounded-lg text-[8px] font-black uppercase tracking-widest hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors flex items-center justify-center gap-1"
-                      >
-                        Get API Key <ExternalLink className="w-2 h-2" />
-                      </button>
-                    </div>
-                  ))}
-                </div>
               </div>
             )}
           </div>

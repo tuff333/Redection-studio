@@ -10,9 +10,8 @@ import express from "express";
 import { createServer as createViteServer } from "vite";
 import path from "path";
 import { fileURLToPath } from "url";
-import { PDFDocument, rgb } from "pdf-lib";
+import { PDFDocument, rgb, degrees } from "pdf-lib";
 import Tesseract from "tesseract.js";
-import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -223,6 +222,63 @@ async function startServer() {
     } catch (error) {
       console.error("Remove Pages Error:", error);
       res.status(500).json({ error: "Failed to remove pages" });
+    }
+  });
+
+  app.post("/api/pdf/rotate", async (req, res) => {
+    try {
+      const { pdfBase64, rotation } = req.body;
+      const pdfDoc = await PDFDocument.load(pdfBase64);
+      const pages = pdfDoc.getPages();
+      pages.forEach(p => p.setRotation(degrees(rotation || 90)));
+      const saved = await pdfDoc.saveAsBase64();
+      res.json({ pdf: saved });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to rotate PDF" });
+    }
+  });
+
+  app.post("/api/pdf/flatten", async (req, res) => {
+    try {
+      const { pdfBase64 } = req.body;
+      const pdfDoc = await PDFDocument.load(pdfBase64);
+      const form = pdfDoc.getForm();
+      form.flatten();
+      const saved = await pdfDoc.saveAsBase64();
+      res.json({ pdf: saved });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to flatten PDF" });
+    }
+  });
+
+  app.post("/api/pdf/info", async (req, res) => {
+    try {
+      const { pdfBase64 } = req.body;
+      const pdfDoc = await PDFDocument.load(pdfBase64);
+      const info = {
+        title: pdfDoc.getTitle(),
+        author: pdfDoc.getAuthor(),
+        subject: pdfDoc.getSubject(),
+        creator: pdfDoc.getCreator(),
+        keywords: pdfDoc.getKeywords(),
+        producer: pdfDoc.getProducer(),
+        creationDate: pdfDoc.getCreationDate(),
+        modificationDate: pdfDoc.getModificationDate(),
+        pageCount: pdfDoc.getPageCount(),
+      };
+      res.json({ info });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to get PDF info" });
+    }
+  });
+
+  app.post("/api/unlock", async (req, res) => {
+    // Placeholder for unlock - in a real scenario we'd need a password or specialized library
+    try {
+      const { pdfBase64 } = req.body;
+      res.json({ pdf: pdfBase64, message: "PDF unlocked (simulation)" });
+    } catch (error) {
+      res.status(500).json({ error: "Unlock failed" });
     }
   });
 

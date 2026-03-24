@@ -1,6 +1,5 @@
 import { createWorker } from 'tesseract.js';
 import type { Page, Word } from 'tesseract.js';
-import { GoogleGenAI, Type } from "@google/genai";
 
 export interface LocalDetectionResult {
   x: number;
@@ -17,6 +16,7 @@ const PII_PATTERNS = {
   CREDIT_CARD: /\b(?:\d[ -]*?){13,16}\b/g,
   DATE: /\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b/g,
   IP_ADDRESS: /\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/g,
+  ACCOUNT_NUMBER: /\b\d{8,12}\b/g,
 };
 
 export async function performLocalOCR(image: string): Promise<Page> {
@@ -46,6 +46,7 @@ export function detectPIILocal(text: string, words: Word[] = [], sensitivity: nu
 
   for (const [label, pattern] of Object.entries(activePatterns)) {
     let match;
+    pattern.lastIndex = 0; // Reset regex state
     while ((match = pattern.exec(text)) !== null) {
       const matchedText = match[0];
       const startIndex = match.index;
@@ -135,116 +136,114 @@ export function detectSensitiveTermsLocal(text: string, words: Word[] = [], term
 }
 
 export async function detectAdvancedAI(text: string, rules?: any, companyProfile?: any): Promise<any[]> {
-  try {
-    const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-    
-    const systemInstruction = `
-      Analyze the following text for sensitive information that needs redaction.
-      Identify:
-      1. PII (Names, Emails, Phones, SSNs, Addresses, etc.)
-      2. Financial Data (Credit Cards, Account Numbers)
-      3. Company-specific sensitive terms: ${rules?.sensitiveTerms || 'None'}
-      4. COA (Certificate of Analysis) fields (Batch numbers, Test results, Specs)
-      5. Barcodes or QR codes mentioned in text.
-      
-      Company Profile Context: ${JSON.stringify(companyProfile || {})}
-    `;
-
-    const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: [{ role: "user", parts: [{ text: `Text to analyze:\n${text}` }] }],
-      config: {
-        systemInstruction,
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.ARRAY,
-          items: {
-            type: Type.OBJECT,
-            properties: {
-              text: { type: Type.STRING },
-              label: { type: Type.STRING },
-              reason: { type: Type.STRING }
-            },
-            required: ["text", "label", "reason"]
-          }
-        }
-      }
-    });
-
-    if (!response.text) return [];
-    return JSON.parse(response.text);
-  } catch (error) {
-    console.error("Detection Error:", error);
-    return [];
+  // Offline implementation using regex and local logic
+  const detections: any[] = [];
+  
+  // 1. Detect PII using local patterns
+  for (const [label, pattern] of Object.entries(PII_PATTERNS)) {
+    let match;
+    pattern.lastIndex = 0;
+    while ((match = pattern.exec(text)) !== null) {
+      detections.push({
+        text: match[0],
+        label: label,
+        reason: `Matched local PII pattern for ${label}`
+      });
+    }
   }
+
+  // 2. Detect sensitive terms from rules
+  if (rules?.sensitiveTerms) {
+    const terms = Array.isArray(rules.sensitiveTerms) ? rules.sensitiveTerms : rules.sensitiveTerms.split(',');
+    for (const term of terms) {
+      const cleanTerm = term.trim();
+      if (!cleanTerm) continue;
+      const regex = new RegExp(`\\b${cleanTerm}\\b`, 'gi');
+      let match;
+      while ((match = regex.exec(text)) !== null) {
+        detections.push({
+          text: match[0],
+          label: 'SENSITIVE_TERM',
+          reason: `Matched sensitive term: ${cleanTerm}`
+        });
+      }
+    }
+  }
+
+  // 3. Detect company profile keywords
+  if (companyProfile?.keywords) {
+    const keywords = Array.isArray(companyProfile.keywords) ? companyProfile.keywords : companyProfile.keywords.split(',');
+    for (const kw of keywords) {
+      const cleanKw = kw.trim();
+      if (!cleanKw) continue;
+      const regex = new RegExp(`\\b${cleanKw}\\b`, 'gi');
+      let match;
+      while ((match = regex.exec(text)) !== null) {
+        detections.push({
+          text: match[0],
+          label: 'COMPANY_KEYWORD',
+          reason: `Matched company profile keyword: ${cleanKw}`
+        });
+      }
+    }
+  }
+
+  return detections;
 }
 
 export async function trainModelFromFiles(originalText: string, redactedText?: string): Promise<{ companyName: string; suggestedRules: any; detectedRedactions: any[] }> {
-  try {
-    const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+  // Offline implementation for AI training
+  const lines = originalText.split('\n').filter(l => l.trim());
+  const companyName = lines[0] ? lines[0].substring(0, 50).trim() : 'Unknown Company';
+  
+  const suggestedRules = {
+    name: `${companyName} Rules`,
+    patterns: ['[A-Z]{2,}-\\d{4,}', '\\d{3}-\\d{2}-\\d{4}'],
+    sensitiveTerms: ['Confidential', 'Internal', 'Proprietary'],
+    description: `Automatically generated rules for ${companyName}`
+  };
+
+  const detectedRedactions: any[] = [];
+
+  // If redactedText is provided, find differences
+  if (redactedText) {
+    // Simple diff logic: find words in original that are NOT in redacted
+    const originalWords = originalText.split(/\s+/);
+    const redactedWords = redactedText.split(/\s+/);
+    const diff = originalWords.filter(w => !redactedWords.includes(w) && w.length > 3);
     
-    const systemInstruction = `
-      You are an AI trainer for a PDF Redaction Tool.
-      Your task is to:
-      1. Identify the company name from the provided text.
-      2. If 'redactedText' is provided, compare it with 'originalText' to identify what was removed.
-      3. Suggest redaction rules (keywords, regex patterns, or specific entity types like "Name", "Address") for this company.
-      4. If 'redactedText' is NOT provided, analyze 'originalText' to suggest what *should* be redacted based on standard PII/sensitive data practices for this type of document.
-      
-      Return a JSON object with:
-      - companyName: string
-      - suggestedRules: { name, patterns, sensitiveTerms, description }
-      - detectedRedactions: array of { text, label, reason }
-    `;
-
-    const prompt = redactedText 
-      ? `Original Text:\n${originalText}\n\nRedacted Text:\n${redactedText}`
-      : `Original Text:\n${originalText}`;
-
-    const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
-      config: {
-        systemInstruction,
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            companyName: { type: Type.STRING },
-            suggestedRules: {
-              type: Type.OBJECT,
-              properties: {
-                name: { type: Type.STRING },
-                patterns: { type: Type.ARRAY, items: { type: Type.STRING } },
-                sensitiveTerms: { type: Type.ARRAY, items: { type: Type.STRING } },
-                description: { type: Type.STRING }
-              },
-              required: ["name", "patterns", "sensitiveTerms"]
-            },
-            detectedRedactions: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  text: { type: Type.STRING },
-                  label: { type: Type.STRING },
-                  reason: { type: Type.STRING }
-                },
-                required: ["text", "label", "reason"]
-              }
-            }
-          },
-          required: ["companyName", "suggestedRules", "detectedRedactions"]
-        }
+    // Deduplicate and add to suggestions
+    const uniqueDiff = Array.from(new Set(diff));
+    uniqueDiff.forEach(text => {
+      detectedRedactions.push({
+        text,
+        label: 'LEARNED_REDACTION',
+        reason: 'Identified as redacted in training sample'
+      });
+      if (!suggestedRules.sensitiveTerms.includes(text)) {
+        suggestedRules.sensitiveTerms.push(text);
       }
     });
-
-    if (!response.text) throw new Error("No response from AI");
-    return JSON.parse(response.text);
-  } catch (error) {
-    console.error("Training Error:", error);
-    throw error;
   }
+
+  // Add some standard PII detections as suggestions
+  for (const [label, pattern] of Object.entries(PII_PATTERNS)) {
+    let match;
+    pattern.lastIndex = 0;
+    while ((match = pattern.exec(originalText)) !== null) {
+      detectedRedactions.push({
+        text: match[0],
+        label: label,
+        reason: `Detected ${label} in training sample`
+      });
+    }
+  }
+
+  return {
+    companyName,
+    suggestedRules,
+    detectedRedactions: detectedRedactions.slice(0, 20) // Limit results
+  };
 }
 
 export async function unlockPDF(pdfBase64: string): Promise<string | null> {
@@ -262,3 +261,4 @@ export async function unlockPDF(pdfBase64: string): Promise<string | null> {
     return null;
   }
 }
+
