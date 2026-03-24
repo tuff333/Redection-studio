@@ -1368,7 +1368,7 @@ function EditorView({ file, settings, setSettings, onBack, setView, addAlert, se
       if (settings.companyRules?.length > 0) {
         settings.companyRules.filter(r => r.isActive).forEach((rule, ruleIdx) => {
           // Regex Patterns
-          rule.patterns.forEach((patternStr, patIdx) => {
+          (rule.patterns || []).forEach((patternStr, patIdx) => {
             try {
               const regex = new RegExp(patternStr, 'gi');
               let match;
@@ -1416,7 +1416,7 @@ function EditorView({ file, settings, setSettings, onBack, setView, addAlert, se
           });
 
           // Sensitive Terms
-          rule.sensitiveTerms.forEach((term, termIdx) => {
+          (rule.sensitiveTerms || []).forEach((term, termIdx) => {
             const regex = new RegExp(`\\b${term}\\b`, 'gi');
             let match;
             while ((match = regex.exec(text)) !== null) {
@@ -2334,7 +2334,7 @@ function EditorView({ file, settings, setSettings, onBack, setView, addAlert, se
                           <span className="text-[8px] text-neutral-400 font-mono">{rule.patterns.length} Patterns</span>
                         </div>
                         <div className="flex flex-wrap gap-1 mt-2">
-                          {rule.identifiers.slice(0, 3).map((id, i) => (
+                          {(rule.identifiers || []).slice(0, 3).map((id, i) => (
                             <span key={i} className="text-[8px] bg-neutral-200 dark:bg-neutral-700 px-1.5 py-0.5 rounded uppercase">{id}</span>
                           ))}
                         </div>
@@ -3619,7 +3619,7 @@ function SettingsView({ settings, setSettings, onBack, activeFile, setFiles, add
                           <span key={idx} className="px-3 py-1 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 rounded-lg text-xs font-bold flex items-center gap-2 group/tag">
                             {p}
                             <button onClick={() => {
-                              const updatedPatterns = rule.patterns.filter((_, i) => i !== idx);
+                              const updatedPatterns = (rule.patterns || []).filter((_, i) => i !== idx);
                               updateCompanyRule(rule.id, { patterns: updatedPatterns });
                             }} className="opacity-0 group-hover/tag:opacity-100 transition-opacity"><X className="w-3 h-3" /></button>
                           </span>
@@ -3983,7 +3983,7 @@ function SettingsView({ settings, setSettings, onBack, activeFile, setFiles, add
                     <div>
                       <label className="block text-[10px] font-black text-neutral-400 uppercase tracking-widest mb-2">Sensitive Terms (comma separated)</label>
                       <textarea 
-                        value={rule.sensitiveTerms.join(', ')}
+                        value={(rule.sensitiveTerms || []).join(', ')}
                         onChange={(e) => updateCompanyRule(rule.id, { sensitiveTerms: e.target.value.split(',').map(s => s.trim()).filter(Boolean) })}
                         className="w-full px-4 py-3 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 rounded-2xl text-xs outline-none focus:ring-2 focus:ring-black dark:focus:ring-white h-24"
                         placeholder="e.g. Secret, Confidential, Internal"
@@ -3992,7 +3992,7 @@ function SettingsView({ settings, setSettings, onBack, activeFile, setFiles, add
                     <div>
                       <label className="block text-[10px] font-black text-neutral-400 uppercase tracking-widest mb-2">Regex Patterns (comma separated)</label>
                       <textarea 
-                        value={rule.patterns.join(', ')}
+                        value={(rule.patterns || []).join(', ')}
                         onChange={(e) => updateCompanyRule(rule.id, { patterns: e.target.value.split(',').map(s => s.trim()).filter(Boolean) })}
                         className="w-full px-4 py-3 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 rounded-2xl text-xs outline-none focus:ring-2 focus:ring-black dark:focus:ring-white h-24"
                         placeholder="e.g. \\d{3}-\\d{2}-\\d{4}, [A-Z]{2}\\d{6}"
@@ -4004,7 +4004,7 @@ function SettingsView({ settings, setSettings, onBack, activeFile, setFiles, add
                     <label className="block text-[10px] font-black text-neutral-400 uppercase tracking-widest mb-2">Company Identifiers (Keywords to trigger this rule)</label>
                     <input 
                       type="text" 
-                      value={rule.identifiers?.join(', ') || ''}
+                      value={(rule.identifiers || []).join(', ')}
                       onChange={(e) => updateCompanyRule(rule.id, { identifiers: e.target.value.split(',').map(s => s.trim()).filter(Boolean) })}
                       className="w-full px-4 py-3 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 rounded-2xl text-xs outline-none focus:ring-2 focus:ring-black dark:focus:ring-white"
                       placeholder="e.g. Acme Corp, Global Tech"
