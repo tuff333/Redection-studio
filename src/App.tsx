@@ -23,6 +23,9 @@ import { validateDataWithAPI, RECOMMENDED_APIS } from './services/publicApiServi
 import 'react-pdf/dist/Page/AnnotationLayer.css';
 import 'react-pdf/dist/Page/TextLayer.css';
 
+import { StirlingTools } from './components/StirlingTools';
+import { ToolDialog } from './components/ToolDialog';
+
 // --- Sub-components ---
 
 function ToolbarButton({ 
@@ -207,7 +210,8 @@ const DEFAULT_SETTINGS: AppSettings = {
 };
 
 export default function App() {
-  const [view, setView] = useState<'home' | 'editor' | 'batch' | 'settings' | 'training' | 'api-hub'>('home');
+  const [view, setView] = useState<'home' | 'editor' | 'batch' | 'settings' | 'training' | 'api-hub' | 'stirling-tools'>('home');
+  const [activeTool, setActiveTool] = useState<any>(null);
   const [files, setFiles] = useState<PDFFile[]>([]);
   const [activeFileId, setActiveFileId] = useState<string | null>(null);
   const [settings, setSettings] = useState<AppSettings>(() => {
@@ -418,10 +422,10 @@ export default function App() {
 
                 {/* Tool Cards */}
                 {[
+                  { title: 'PDF Toolbox', desc: 'Metadata, Security, Formatting & more', icon: LayoutGrid, action: () => setView('stirling-tools'), color: 'bg-indigo-500' },
                   { title: 'Batch Process', desc: 'Redact multiple files at once', icon: Files, action: () => setView('batch'), color: 'bg-blue-500' },
                   { title: 'Public API Hub', desc: 'Integrate external data validators', icon: Globe, action: () => setView('api-hub'), color: 'bg-emerald-500' },
                   { title: 'AI Training', desc: 'Improve detection accuracy', icon: Brain, action: () => setView('training'), color: 'bg-purple-500' },
-                  { title: 'Security Audit', desc: 'Check for hidden metadata', icon: ShieldAlert, action: () => setView('settings'), color: 'bg-amber-500' },
                 ].map((tool, i) => (
                   <motion.button
                     key={tool.title}
@@ -454,6 +458,44 @@ export default function App() {
                   <span className="text-[10px] font-black uppercase tracking-widest">GDPR Compliant</span>
                 </div>
               </div>
+            </motion.div>
+          )}
+
+          {view === 'stirling-tools' && (
+            <motion.div
+              key="stirling-tools"
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -20 }}
+              className="space-y-12"
+            >
+              <div className="flex items-center justify-between">
+                <div>
+                  <h1 className="text-4xl font-black tracking-tight mb-2">PDF Toolbox</h1>
+                  <p className="text-neutral-500 dark:text-neutral-400 font-medium">Comprehensive tools for document manipulation and security.</p>
+                </div>
+                <button 
+                  onClick={() => setView('home')}
+                  className="px-6 py-3 bg-neutral-100 dark:bg-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-700 rounded-2xl font-bold transition-colors flex items-center gap-2"
+                >
+                  <ChevronLeft className="w-4 h-4" />
+                  Back to Home
+                </button>
+              </div>
+
+              <StirlingTools onToolClick={(tool) => {
+                setActiveTool(tool);
+              }} />
+
+              <AnimatePresence>
+                {activeTool && (
+                  <ToolDialog 
+                    tool={activeTool} 
+                    onClose={() => setActiveTool(null)} 
+                    addAlert={addAlert}
+                  />
+                )}
+              </AnimatePresence>
             </motion.div>
           )}
 
