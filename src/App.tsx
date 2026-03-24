@@ -2345,7 +2345,7 @@ function EditorView({ file, settings, setSettings, onBack, setView, addAlert, se
                       <p className="text-xs font-medium">No templates saved yet</p>
                     </div>
                   ) : (
-                    settings.companyRules?.map((rule) => (
+                    (settings.companyRules || []).map((rule) => (
                       <div key={rule.id} className="p-3 rounded-xl bg-neutral-50 dark:bg-neutral-800 border border-neutral-100 dark:border-neutral-700 group">
                         <div className="flex items-center justify-between mb-1">
                           <span className="text-[10px] font-bold text-black dark:text-white uppercase tracking-widest">{rule.name}</span>
@@ -2511,7 +2511,7 @@ function EditorView({ file, settings, setSettings, onBack, setView, addAlert, se
                       <p className="text-[10px] text-neutral-400">No text detected on this page</p>
                     </div>
                   ) : (
-                    ocrResults[pageNumber - 1].map((res, i) => (
+                    (ocrResults[pageNumber - 1] || []).map((res, i) => (
                       <div 
                         key={i} 
                         onMouseEnter={() => setHoveredOCR(res)}
@@ -2618,7 +2618,7 @@ function EditorView({ file, settings, setSettings, onBack, setView, addAlert, se
             options={pdfOptions}
             loading={<div className="p-8 text-center"><RefreshCw className="w-6 h-6 animate-spin mx-auto mb-2" /><p className="text-xs">Loading document...</p></div>}
           >
-            {Array.from(new Array(numPages), (el, index) => (
+            {Array.from({ length: numPages }, (el, index) => (
               <div 
                 key={`page_${index + 1}`} 
                 className="relative shadow-lg bg-white dark:bg-neutral-900 rounded-sm overflow-hidden mb-4"
@@ -4255,7 +4255,8 @@ function TrainingView({ settings, setSettings, addAlert }: {
   };
 
   function findRedactedBoxes(orig: ImageData, red: ImageData, width: number, height: number) {
-    const diff: boolean[] = new Array(width * height).fill(false);
+    const totalPixels = orig.width * orig.height;
+    const diff: boolean[] = new Array(totalPixels).fill(false);
     let hasDiff = false;
 
     for (let i = 0; i < orig.data.length; i += 4) {
@@ -4526,7 +4527,7 @@ function TrainingView({ settings, setSettings, addAlert }: {
                         </div>
                       ))}
 
-                      {session.learnedData.detectedRedactions.map((r, idx) => (
+                      {(session.learnedData?.detectedRedactions || []).map((r, idx) => (
                         <div key={`ai-${idx}`} className="p-3 bg-blue-50/50 dark:bg-blue-950/10 border border-blue-100 dark:border-blue-900/30 rounded-xl">
                           <div className="flex items-center justify-between mb-1">
                             <span className="text-[10px] font-bold text-blue-600 dark:text-blue-400 uppercase tracking-widest">AI Suggestion</span>
@@ -4585,7 +4586,7 @@ function TrainingView({ settings, setSettings, addAlert }: {
                               <Page pageNumber={1} width={300 * zoom} renderTextLayer={false} renderAnnotationLayer={false} />
                             </Document>
                             <div className="absolute inset-0 pointer-events-none">
-                              {session.learnedData.suggestedRules.learnedCoordinates?.filter(c => c.pageIndex === 0).map((c, i) => (
+                              {(session.learnedData?.suggestedRules.learnedCoordinates || []).filter(c => c.pageIndex === 0).map((c, i) => (
                                 <div 
                                   key={i}
                                   className="absolute border-2 border-blue-500 bg-blue-500/20"
