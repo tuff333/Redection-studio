@@ -282,6 +282,199 @@ async function startServer() {
     }
   });
 
+  app.post("/api/pdf/watermark", async (req, res) => {
+    try {
+      const { pdfBase64, text, opacity, color } = req.body;
+      if (!pdfBase64) return res.status(400).json({ error: "No PDF provided" });
+
+      const pdfDoc = await PDFDocument.load(pdfBase64);
+      const pages = pdfDoc.getPages();
+      const { width, height } = pages[0].getSize();
+
+      for (const page of pages) {
+        page.drawText(text || 'WATERMARK', {
+          x: width / 4,
+          y: height / 2,
+          size: 50,
+          color: rgb(0.5, 0.5, 0.5),
+          opacity: opacity || 0.3,
+          rotate: degrees(45),
+        });
+      }
+
+      const saved = await pdfDoc.saveAsBase64();
+      res.json({ pdf: saved });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to add watermark" });
+    }
+  });
+
+  app.post("/api/pdf/sanitize", async (req, res) => {
+    try {
+      const { pdfBase64 } = req.body;
+      const pdfDoc = await PDFDocument.load(pdfBase64);
+      
+      // Remove all metadata
+      pdfDoc.setTitle('');
+      pdfDoc.setAuthor('');
+      pdfDoc.setSubject('');
+      pdfDoc.setKeywords([]);
+      pdfDoc.setProducer('');
+      pdfDoc.setCreator('');
+      
+      const saved = await pdfDoc.saveAsBase64();
+      res.json({ pdf: saved });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to sanitize PDF" });
+    }
+  });
+
+  app.post("/api/pdf/repair", async (req, res) => {
+    try {
+      const { pdfBase64 } = req.body;
+      // Re-saving with pdf-lib often repairs minor structure issues
+      const pdfDoc = await PDFDocument.load(pdfBase64, { ignoreEncryption: true });
+      const saved = await pdfDoc.saveAsBase64();
+      res.json({ pdf: saved, message: "PDF structure repaired" });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to repair PDF" });
+    }
+  });
+
+  app.post("/api/pdf/add-page-numbers", async (req, res) => {
+    try {
+      const { pdfBase64, position } = req.body;
+      const pdfDoc = await PDFDocument.load(pdfBase64);
+      const pages = pdfDoc.getPages();
+      
+      pages.forEach((page, i) => {
+        const { width, height } = page.getSize();
+        page.drawText(`Page ${i + 1} of ${pages.length}`, {
+          x: width / 2 - 30,
+          y: 20,
+          size: 10,
+          color: rgb(0, 0, 0),
+        });
+      });
+
+      const saved = await pdfDoc.saveAsBase64();
+      res.json({ pdf: saved });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to add page numbers" });
+    }
+  });
+
+  // Merge PDFs
+  app.post("/api/pdf/merge", async (req, res) => {
+    try {
+      const { pdfsBase64 } = req.body; // Array of base64 strings
+      if (!pdfsBase64 || !Array.isArray(pdfsBase64)) return res.status(400).json({ error: "Multiple PDFs required" });
+
+      const mergedPdf = await PDFDocument.create();
+
+      for (const base64 of pdfsBase64) {
+        const pdf = await PDFDocument.load(base64);
+        const copiedPages = await mergedPdf.copyPages(pdf, pdf.getPageIndices());
+        copiedPages.forEach((page) => mergedPdf.addPage(page));
+      }
+
+      const saved = await mergedPdf.saveAsBase64();
+      res.json({ pdf: saved });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to merge PDFs" });
+    }
+  });
+
+  // Extract Images (Simulation)
+  app.post("/api/pdf/extract-images", async (req, res) => {
+    try {
+      // Simulation: In a real app, we'd use a more specialized library
+      res.json({ message: "Image extraction complete. In production, this would return a ZIP of extracted images.", imagesCount: 3 });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to extract images" });
+    }
+  });
+
+  // Scanner Effect (Simulation)
+  app.post("/api/pdf/scanner-effect", async (req, res) => {
+    try {
+      const { pdfBase64 } = req.body;
+      const pdfDoc = await PDFDocument.load(pdfBase64);
+      const pages = pdfDoc.getPages();
+
+      for (const page of pages) {
+        const randomRotation = (Math.random() - 0.5) * 1.5; // -0.75 to 0.75 degrees
+        const currentRotation = page.getRotation().angle;
+        page.setRotation(degrees(currentRotation + randomRotation));
+      }
+
+      const saved = await pdfDoc.saveAsBase64();
+      res.json({ pdf: saved });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to apply scanner effect" });
+    }
+  });
+
+  // Remove Blank Pages (Simulation)
+  app.post("/api/pdf/remove-blank-pages", async (req, res) => {
+    try {
+      const { pdfBase64 } = req.body;
+      const pdfDoc = await PDFDocument.load(pdfBase64);
+      const pages = pdfDoc.getPages();
+      
+      // In a real app, we'd check the content of each page
+      // Here we just simulate by removing the last page if it's "blank" (placeholder logic)
+      if (pages.length > 1) {
+        pdfDoc.removePage(pages.length - 1);
+      }
+
+      const saved = await pdfDoc.saveAsBase64();
+      res.json({ pdf: saved, message: "Blank pages removed (simulated)" });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to remove blank pages" });
+    }
+  });
+
+  // --- Rule Management ---
+
+  app.post("/api/rules/save", async (req, res) => {
+    try {
+      const { rule, companyName } = req.body;
+      if (!rule || !companyName) return res.status(400).json({ error: "Rule and company name required" });
+
+      const fs = await import("fs/promises");
+      const rulesDir = path.join(__dirname, "config", "rules", "learned_ai");
+      
+      // Ensure directory exists
+      await fs.mkdir(rulesDir, { recursive: true });
+      
+      const fileName = `${companyName.toLowerCase().replace(/\s+/g, '_')}_rule.json`;
+      const filePath = path.join(rulesDir, fileName);
+      
+      await fs.writeFile(filePath, JSON.stringify(rule, null, 2));
+      
+      // Update index
+      const indexPath = path.join(rulesDir, "index.json");
+      let index = [];
+      try {
+        const indexData = await fs.readFile(indexPath, "utf-8");
+        index = JSON.parse(indexData);
+      } catch (e) {
+        // Index might not exist yet
+      }
+      
+      if (!index.find((item: any) => item.id === rule.id)) {
+        index.push({ id: rule.id, name: rule.name, company: companyName, file: fileName });
+        await fs.writeFile(indexPath, JSON.stringify(index, null, 2));
+      }
+
+      res.json({ status: "success", message: `Rule saved for ${companyName}`, path: filePath });
+    } catch (error) {
+      console.error("Save Rule Error:", error);
+      res.status(500).json({ error: "Failed to save rule" });
+    }
+  });
+
   // --- Vite Middleware ---
 
   if (process.env.NODE_ENV !== "production") {

@@ -4,7 +4,7 @@ import {
   FileEdit, BookOpen, Eye, ShieldCheck, Lock, Droplets, Stamp, Eraser, Layers, Unlock, Shield, Info, 
   CheckCircle, Crop, RotateCw, Split, Layout, Maximize, Hash, Grid, Book, FilePlus, Paperclip, 
   Copy, Image as ImageIcon, Trash2, UserX, Key, Wand2, Play, Type, PenTool, Palette, Wrench, 
-  Camera, Copy as CopyIcon, Replace, Zap, Code, Terminal, FolderSync, Users, WifiOff
+  Camera, Copy as CopyIcon, Replace, Zap, Code, Terminal, FolderSync, Users, WifiOff, FileText
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 
@@ -24,6 +24,7 @@ const TOOLS: Tool[] = [
   { name: 'Sign', icon: PenTool, description: 'Add hand-drawn or image signatures.', category: 'Document Review' },
 
   // Document Security
+  { name: 'Compress PDF', icon: Maximize, description: 'Reduce PDF file size while optimizing for maximal PDF quality.', category: 'Document Security' },
   { name: 'Add Password', icon: Lock, description: 'Protect your PDF with a password.', category: 'Document Security' },
   { name: 'Add Watermark', icon: Droplets, description: 'Overlay text or images as watermarks.', category: 'Document Security' },
   { name: 'Add Stamp to PDF', icon: Stamp, description: 'Apply predefined or custom stamps.', category: 'Document Security' },
@@ -37,6 +38,7 @@ const TOOLS: Tool[] = [
   { name: 'Validate PDF Signature', icon: CheckCircle, description: 'Verify the integrity of digital signatures.', category: 'Verification' },
 
   // Page Formatting
+  { name: 'Merge PDF', icon: Layers, description: 'Combine multiple PDFs into one document.', category: 'Page Formatting' },
   { name: 'Crop PDF', icon: Crop, description: 'Adjust page margins and visible area.', category: 'Page Formatting' },
   { name: 'Rotate', icon: RotateCw, description: 'Rotate pages individually or in bulk.', category: 'Page Formatting' },
   { name: 'Split', icon: Split, description: 'Break a PDF into multiple smaller files.', category: 'Page Formatting' },
@@ -49,6 +51,8 @@ const TOOLS: Tool[] = [
   { name: 'Add Attachments', icon: Paperclip, description: 'Embed files directly into the PDF.', category: 'Page Formatting' },
 
   // Extraction
+  { name: 'PDF to Word', icon: FileText, description: 'Convert PDF documents to editable Word files.', category: 'Extraction' },
+  { name: 'PDF to JPG', icon: ImageIcon, description: 'Convert each PDF page into a JPG image.', category: 'Extraction' },
   { name: 'Extract Pages', icon: Copy, description: 'Save specific pages as a new PDF.', category: 'Extraction' },
   { name: 'Extract Images', icon: ImageIcon, description: 'Pull all embedded images from the document.', category: 'Extraction' },
 
@@ -65,6 +69,8 @@ const TOOLS: Tool[] = [
   { name: 'Automate', icon: Play, description: 'Run custom processing pipelines.', category: 'Automation' },
 
   // General
+  { name: 'Word to PDF', icon: FilePlus, description: 'Convert Word documents to PDF format.', category: 'General' },
+  { name: 'JPG to PDF', icon: ImageIcon, description: 'Convert JPG images to PDF documents.', category: 'General' },
   { name: 'Add Text', icon: Type, description: 'Insert new text blocks into the PDF.', category: 'General' },
   { name: 'Add image', icon: ImageIcon, description: 'Place images onto PDF pages.', category: 'General' },
   { name: 'Annotate', icon: PenTool, description: 'Draw, highlight, and comment.', category: 'General' },
@@ -89,27 +95,27 @@ const CATEGORIES = Array.from(new Set(TOOLS.map(t => t.category)));
 
 export function StirlingTools({ onToolClick }: { onToolClick: (tool: Tool) => void }) {
   return (
-    <div className="space-y-12">
+    <div className="space-y-16">
       {CATEGORIES.map((category) => (
-        <div key={category} className="space-y-6">
-          <div className="flex items-center gap-4">
-            <h2 className="text-2xl font-black tracking-tight uppercase">{category}</h2>
+        <div key={category} className="space-y-8">
+          <div className="flex items-center gap-6">
+            <h2 className="text-xs font-black text-neutral-400 uppercase tracking-[0.3em] font-mono">{category}</h2>
             <div className="h-px flex-1 bg-neutral-200 dark:bg-neutral-800" />
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
             {TOOLS.filter(t => t.category === category).map((tool) => (
               <motion.button
                 key={tool.name}
-                whileHover={{ scale: 1.02, y: -2 }}
+                whileHover={{ x: 4 }}
                 whileTap={{ scale: 0.98 }}
                 onClick={() => onToolClick(tool)}
-                className="group flex flex-col items-start p-6 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-3xl text-left hover:shadow-xl transition-all duration-300 hover:border-black dark:hover:border-white"
+                className="group flex flex-col items-start p-6 bg-white dark:bg-neutral-900 tech-border rounded-none text-left hover:bg-black hover:text-white dark:hover:bg-white dark:hover:text-black transition-all duration-200"
               >
-                <div className="w-10 h-10 rounded-xl bg-neutral-100 dark:bg-neutral-800 flex items-center justify-center mb-4 group-hover:bg-black dark:group-hover:bg-white transition-colors">
-                  <tool.icon className="w-5 h-5 text-neutral-600 dark:text-neutral-400 group-hover:text-white dark:group-hover:text-black transition-colors" />
+                <div className="w-12 h-12 rounded-none bg-neutral-100 dark:bg-neutral-800 flex items-center justify-center mb-5 group-hover:bg-cyan-500 group-hover:text-black transition-colors">
+                  <tool.icon className="w-6 h-6 text-neutral-400 transition-colors" />
                 </div>
-                <h3 className="text-sm font-black tracking-tight mb-1 group-hover:text-black dark:group-hover:text-white">{tool.name}</h3>
-                <p className="text-[10px] text-neutral-500 dark:text-neutral-400 font-medium leading-relaxed line-clamp-2">
+                <h3 className="text-xs font-black uppercase tracking-widest mb-2 font-mono">{tool.name}</h3>
+                <p className="text-[10px] text-neutral-500 dark:text-neutral-400 leading-relaxed line-clamp-2 uppercase tracking-tight">
                   {tool.description}
                 </p>
               </motion.button>

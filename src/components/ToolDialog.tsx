@@ -11,6 +11,7 @@ interface ToolDialogProps {
 
 export function ToolDialog({ tool, onClose, addAlert }: ToolDialogProps) {
   const [file, setFile] = useState<File | null>(null);
+  const [files, setFiles] = useState<File[]>([]); // For multi-file tools like Merge
   const [isProcessing, setIsProcessing] = useState(false);
   const [result, setResult] = useState<string | null>(null);
   const [metadata, setMetadata] = useState({
@@ -19,18 +20,81 @@ export function ToolDialog({ tool, onClose, addAlert }: ToolDialogProps) {
     subject: '',
     keywords: ''
   });
+  const [security, setSecurity] = useState({
+    password: '',
+    permissions: 'read-only'
+  });
+  const [watermark, setWatermark] = useState({
+    text: 'CONFIDENTIAL',
+    opacity: 0.3
+  });
+  const [pageRange, setPageRange] = useState('1-5');
+  const [rotation, setRotation] = useState(90);
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      setFile(e.target.files[0]);
+    if (e.target.files) {
+      if (tool.name === 'Merge') {
+        setFiles(prev => [...prev, ...Array.from(e.target.files!)]);
+      } else if (e.target.files[0]) {
+        setFile(e.target.files[0]);
+      }
     }
   };
 
+  const parsePageRange = (rangeStr: string): number[] => {
+    const pages = new Set<number>();
+    const parts = rangeStr.split(',').map(p => p.trim());
+    
+    parts.forEach(part => {
+      if (part.includes('-')) {
+        const [start, end] = part.split('-').map(n => parseInt(n.trim()));
+        if (!isNaN(start) && !isNaN(end)) {
+          for (let i = Math.min(start, end); i <= Math.max(start, end); i++) {
+            pages.add(i - 1); // 0-indexed
+          }
+        }
+      } else {
+        const page = parseInt(part);
+        if (!isNaN(page)) {
+          pages.add(page - 1); // 0-indexed
+        }
+      }
+    });
+    
+    return Array.from(pages).sort((a, b) => a - b);
+  };
+
   const processTool = async () => {
-    if (!file) return;
+    if (!file && files.length === 0) return;
     setIsProcessing(true);
 
     try {
+      if (tool.name === 'Merge') {
+        const pdfsBase64 = await Promise.all(files.map(f => {
+          return new Promise<string>((resolve) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result as string);
+            reader.readAsDataURL(f);
+          });
+        }));
+
+        const response = await fetch('/api/pdf/merge', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pdfsBase64 })
+        });
+
+        const data = await response.json();
+        if (data.pdf) {
+          setResult(data.pdf);
+          addAlert('success', 'PDFs merged successfully!');
+        } else {
+          throw new Error(data.error || 'Merge failed');
+        }
+        setIsProcessing(false);
+        return;
+      }
+
       const reader = new FileReader();
       reader.onload = async () => {
         const base64 = reader.result as string;
@@ -45,23 +109,40 @@ export function ToolDialog({ tool, onClose, addAlert }: ToolDialogProps) {
           case 'Add Password':
           case 'Change Permissions':
             endpoint = '/api/pdf/security';
-            body.password = 'demo123'; // Placeholder
+            body.password = security.password || 'demo123';
+            body.permissions = security.permissions;
+            break;
+          case 'Add Watermark':
+            endpoint = '/api/pdf/watermark';
+            body.text = watermark.text;
+            body.opacity = parseFloat(watermark.opacity.toString());
+            break;
+          case 'Sanitise':
+            endpoint = '/api/pdf/sanitize';
+            break;
+          case 'Repair':
+            endpoint = '/api/pdf/repair';
+            break;
+          case 'Add Page Numbers':
+            endpoint = '/api/pdf/add-page-numbers';
             break;
           case 'Split':
             endpoint = '/api/pdf/split';
-            body.ranges = [[0, 0]]; // Placeholder: first page only
+            const splitIndices = parsePageRange(pageRange);
+            // Convert indices to ranges for the backend
+            body.ranges = splitIndices.map(i => [i, i]); 
             break;
           case 'Extract Pages':
             endpoint = '/api/pdf/extract-pages';
-            body.indices = [0]; // Placeholder: first page only
+            body.indices = parsePageRange(pageRange);
             break;
           case 'Remove Pages':
             endpoint = '/api/pdf/remove-pages';
-            body.indicesToRemove = [0]; // Placeholder: remove first page
+            body.indicesToRemove = parsePageRange(pageRange);
             break;
           case 'Rotate':
             endpoint = '/api/pdf/rotate';
-            body.rotation = 90;
+            body.rotation = rotation;
             break;
           case 'Flatten':
             endpoint = '/api/pdf/flatten';
@@ -71,6 +152,15 @@ export function ToolDialog({ tool, onClose, addAlert }: ToolDialogProps) {
             break;
           case 'Unlock PDF Forms':
             endpoint = '/api/unlock';
+            break;
+          case 'Extract Images':
+            endpoint = '/api/pdf/extract-images';
+            break;
+          case 'Scanner Effect':
+            endpoint = '/api/pdf/scanner-effect';
+            break;
+          case 'Remove Blank pages':
+            endpoint = '/api/pdf/remove-blank-pages';
             break;
           default:
             // Generic fallback or simulated success
@@ -148,28 +238,58 @@ export function ToolDialog({ tool, onClose, addAlert }: ToolDialogProps) {
           </button>
         </div>
 
-        <div className="p-8 space-y-8">
-          {!file ? (
+        <div className="p-8 space-y-8 max-h-[70vh] overflow-y-auto">
+          {!file && files.length === 0 ? (
             <label className="flex flex-col items-center justify-center h-64 border-2 border-dashed border-neutral-200 dark:border-neutral-800 rounded-3xl cursor-pointer hover:border-black dark:hover:border-white transition-all bg-neutral-50 dark:bg-neutral-800/50">
               <FileUp className="w-12 h-12 text-neutral-400 mb-4" />
-              <p className="text-lg font-bold">Select a PDF to process</p>
+              <p className="text-lg font-bold">{tool.name === 'Merge' ? 'Select PDFs to merge' : 'Select a PDF to process'}</p>
               <p className="text-sm text-neutral-500">or drag and drop here</p>
-              <input type="file" className="hidden" accept=".pdf" onChange={handleFileUpload} />
+              <input type="file" className="hidden" accept=".pdf" multiple={tool.name === 'Merge'} onChange={handleFileUpload} />
             </label>
           ) : (
             <div className="space-y-6">
-              <div className="flex items-center justify-between p-4 bg-neutral-50 dark:bg-neutral-800 rounded-2xl border border-neutral-100 dark:border-neutral-700">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 bg-black/5 dark:bg-white/5 rounded-xl flex items-center justify-center">
-                    <tool.icon className="w-5 h-5" />
+              {tool.name === 'Merge' ? (
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-xs font-bold uppercase tracking-widest text-neutral-400">Selected Files ({files.length})</h3>
+                    <button 
+                      onClick={() => document.getElementById('merge-upload')?.click()}
+                      className="text-[10px] font-bold text-black dark:text-white uppercase tracking-widest hover:underline"
+                    >
+                      Add More
+                    </button>
+                    <input id="merge-upload" type="file" className="hidden" accept=".pdf" multiple onChange={handleFileUpload} />
                   </div>
-                  <div>
-                    <p className="text-sm font-bold truncate max-w-[200px]">{file.name}</p>
-                    <p className="text-[10px] text-neutral-500 font-medium tracking-widest uppercase">{(file.size / 1024 / 1024).toFixed(2)} MB</p>
+                  <div className="space-y-2 max-h-48 overflow-y-auto pr-2">
+                    {files.map((f, i) => (
+                      <div key={i} className="flex items-center justify-between p-3 bg-neutral-50 dark:bg-neutral-800 rounded-xl border border-neutral-100 dark:border-neutral-700">
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div className="w-8 h-8 bg-black/5 dark:bg-white/5 rounded-lg flex items-center justify-center shrink-0">
+                            <tool.icon className="w-4 h-4" />
+                          </div>
+                          <p className="text-xs font-bold truncate">{f.name}</p>
+                        </div>
+                        <button onClick={() => setFiles(prev => prev.filter((_, idx) => idx !== i))} className="text-red-500 p-1 hover:bg-red-50 dark:hover:bg-red-950/30 rounded-lg transition-colors">
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    ))}
                   </div>
                 </div>
-                <button onClick={() => setFile(null)} className="text-xs font-bold text-red-500 hover:underline">Remove</button>
-              </div>
+              ) : (
+                <div className="flex items-center justify-between p-4 bg-neutral-50 dark:bg-neutral-800 rounded-2xl border border-neutral-100 dark:border-neutral-700">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 bg-black/5 dark:bg-white/5 rounded-xl flex items-center justify-center">
+                      <tool.icon className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <p className="text-sm font-bold truncate max-w-[200px]">{file?.name}</p>
+                      <p className="text-[10px] text-neutral-500 font-medium tracking-widest uppercase">{(file?.size || 0 / 1024 / 1024).toFixed(2)} MB</p>
+                    </div>
+                  </div>
+                  <button onClick={() => setFile(null)} className="text-xs font-bold text-red-500 hover:underline">Remove</button>
+                </div>
+              )}
 
               {tool.name === 'Change Metadata' && (
                 <div className="grid grid-cols-2 gap-4">
@@ -193,26 +313,75 @@ export function ToolDialog({ tool, onClose, addAlert }: ToolDialogProps) {
                       placeholder="Author Name"
                     />
                   </div>
+                </div>
+              )}
+
+              {(tool.name === 'Add Password' || tool.name === 'Change Permissions') && (
+                <div className="space-y-4">
                   <div className="space-y-2">
-                    <label className="text-[10px] font-black text-neutral-400 uppercase tracking-widest">Subject</label>
+                    <label className="text-[10px] font-black text-neutral-400 uppercase tracking-widest">Password</label>
+                    <input 
+                      type="password" 
+                      value={security.password}
+                      onChange={e => setSecurity({...security, password: e.target.value})}
+                      className="w-full px-4 py-3 bg-neutral-50 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-xl text-sm outline-none focus:ring-2 focus:ring-black dark:focus:ring-white"
+                      placeholder="Enter password"
+                    />
+                  </div>
+                </div>
+              )}
+
+              {tool.name === 'Add Watermark' && (
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-black text-neutral-400 uppercase tracking-widest">Watermark Text</label>
                     <input 
                       type="text" 
-                      value={metadata.subject}
-                      onChange={e => setMetadata({...metadata, subject: e.target.value})}
+                      value={watermark.text}
+                      onChange={e => setWatermark({...watermark, text: e.target.value})}
                       className="w-full px-4 py-3 bg-neutral-50 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-xl text-sm outline-none focus:ring-2 focus:ring-black dark:focus:ring-white"
-                      placeholder="Subject"
                     />
                   </div>
                   <div className="space-y-2">
-                    <label className="text-[10px] font-black text-neutral-400 uppercase tracking-widest">Keywords</label>
+                    <label className="text-[10px] font-black text-neutral-400 uppercase tracking-widest">Opacity (0-1)</label>
                     <input 
-                      type="text" 
-                      value={metadata.keywords}
-                      onChange={e => setMetadata({...metadata, keywords: e.target.value})}
+                      type="number" 
+                      step="0.1"
+                      min="0"
+                      max="1"
+                      value={watermark.opacity}
+                      onChange={e => setWatermark({...watermark, opacity: parseFloat(e.target.value)})}
                       className="w-full px-4 py-3 bg-neutral-50 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-xl text-sm outline-none focus:ring-2 focus:ring-black dark:focus:ring-white"
-                      placeholder="keyword1, keyword2"
                     />
                   </div>
+                </div>
+              )}
+
+              {tool.name === 'Rotate' && (
+                <div className="space-y-2">
+                  <label className="text-[10px] font-black text-neutral-400 uppercase tracking-widest">Rotation Angle</label>
+                  <select 
+                    value={rotation}
+                    onChange={e => setRotation(parseInt(e.target.value))}
+                    className="w-full px-4 py-3 bg-neutral-50 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-xl text-sm outline-none focus:ring-2 focus:ring-black dark:focus:ring-white"
+                  >
+                    <option value={90}>90° Clockwise</option>
+                    <option value={180}>180°</option>
+                    <option value={270}>90° Counter-clockwise</option>
+                  </select>
+                </div>
+              )}
+
+              {(tool.name === 'Split' || tool.name === 'Extract Pages' || tool.name === 'Remove Pages') && (
+                <div className="space-y-2">
+                  <label className="text-[10px] font-black text-neutral-400 uppercase tracking-widest">Page Ranges (e.g. 1-2, 5)</label>
+                  <input 
+                    type="text" 
+                    value={pageRange}
+                    onChange={e => setPageRange(e.target.value)}
+                    className="w-full px-4 py-3 bg-neutral-50 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-xl text-sm outline-none focus:ring-2 focus:ring-black dark:focus:ring-white"
+                    placeholder="1-3, 5"
+                  />
                 </div>
               )}
 

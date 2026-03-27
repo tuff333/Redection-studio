@@ -37,7 +37,7 @@ export interface PDFFile {
   url: string;
   numPages: number;
   redactions: RedactionBox[];
-  status: 'idle' | 'processing' | 'ready' | 'redacted';
+  status: 'idle' | 'processing' | 'ready' | 'redacted' | 'error' | 'pending';
   metadata?: PDFMetadata;
 }
 
@@ -69,14 +69,7 @@ export interface CompanyRule {
   type?: 'regex' | 'keyword' | 'coordinate';
   isActive?: boolean;
   sensitiveTerms: string[];
-  learnedCoordinates?: {
-    pageIndex: number;
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-    label: string;
-  }[];
+  learnedCoordinates?: RedactionBox[];
   identifiers?: string[]; // Keywords that identify this company
   description?: string;
 }
@@ -111,16 +104,24 @@ export interface AppSettings {
   savedBatchRules: BatchRuleSet[];
   companyRules: CompanyRule[];
   aiDefaults: AIDetectionConfig;
+  ocrConfig: {
+    engine: 'tesseract' | 'python' | 'fastapi' | 'python-bridge';
+    language: string;
+    autoRotate?: boolean;
+  };
   companyProfile?: {
     name: string;
     contactDetails?: string;
     content: string; // base64 or text summary
   };
   searchHistory: string[];
+  redactionWordList: string[];
   customTheme?: {
     primaryColor: string;
     secondaryColor: string;
     accentColor: string;
+    gradientColor1?: string;
+    gradientColor2?: string;
     fontFamily?: string;
     canvasBgColor?: string;
   };

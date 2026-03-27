@@ -1,0 +1,9 @@
+{
+  "patterns": [
+    { "name": "Email", "regex": "[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}" },
+    { "name": "Phone", "regex": "(\\+\\d{1,2}\\s?)?1?\\-?\\.?\\s?\\(?\\d{3}\\)?\\-?\\.?\\s?\\d{3}\\-?\\.?\\s?\\d{4}" },
+    { "name": "SSN", "regex": "\\d{3}-\\d{2}-\\d{4}" }
+  ],
+  "sensitiveTerms": ["Confidential", "Proprietary", "Internal Use Only"],
+  "identifiers": ["ID-", "REF-", "ACC-"]
+}
