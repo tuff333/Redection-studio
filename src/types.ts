@@ -11,6 +11,7 @@ export interface RedactionBox {
   path?: string; // For freeform shapes (SVG path data in percentages)
   isSelected: boolean;
   comment?: string;
+  confidence?: number;
 }
 
 export interface OCRResult {
@@ -81,7 +82,7 @@ export interface TrainingSession {
   status: 'idle' | 'uploading' | 'analyzing' | 'preview' | 'completed' | 'error';
   learnedData?: {
     companyName: string;
-    suggestedRules: CompanyRule;
+    suggestedRules: CompanyRule[];
     detectedRedactions: RedactionBox[];
   };
   originalUrl?: string;
@@ -93,6 +94,7 @@ export interface AIDetectionConfig {
   barcodesEnabled: boolean;
   companyDataEnabled: boolean;
   sensitivity: number; // 0-1
+  lightMode: boolean; // Toggle for low-resource machines
 }
 
 export interface AppSettings {
@@ -116,6 +118,7 @@ export interface AppSettings {
   };
   searchHistory: string[];
   redactionWordList: string[];
+  favorites: string[];
   customTheme?: {
     primaryColor: string;
     secondaryColor: string;

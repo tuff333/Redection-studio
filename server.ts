@@ -1,17 +1,12 @@
-/**
- * Redactio Server
- * 
- * To run in development:
- * npm run dev (runs: tsx server.ts)
- * 
- * Always run from the project root directory.
- */
 import express from "express";
 import { createServer as createViteServer } from "vite";
 import path from "path";
 import { fileURLToPath } from "url";
-import { PDFDocument, rgb, degrees } from "pdf-lib";
-import Tesseract from "tesseract.js";
+import multer from "multer";
+import fs from "fs";
+import { PDFDocument, rgb, degrees as pdfDegrees } from "pdf-lib";
+import { v4 as uuidv4 } from "uuid";
+import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -19,464 +14,614 @@ dotenv.config();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-async function startServer() {
-  const app = express();
-  const PORT = 3000;
+const app = express();
+const PORT = 3000;
 
-  app.use(express.json({ limit: '50mb' }));
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
 
-  // --- API Routes ---
+// Setup storage for uploads
+const UPLOADS_DIR = "uploads";
+if (!fs.existsSync(UPLOADS_DIR)) {
+  fs.mkdirSync(UPLOADS_DIR);
+}
+const upload = multer({ dest: UPLOADS_DIR });
 
-  // OCR Engine
-  app.get("/api/ocr/health", async (req, res) => {
-    try {
-      // Simple check to see if Tesseract is available
-      res.json({ status: "ok", engine: "tesseract.js" });
-    } catch (error) {
-      res.status(500).json({ status: "error", message: "OCR engine not available" });
-    }
-  });
+// API Routes
+app.use(express.json());
 
-  app.post("/api/ocr", async (req, res) => {
-    try {
-      const { image } = req.body; // base64
-      if (!image) return res.status(400).json({ error: "No image provided" });
+// Health check
+app.get("/api/health", (req, res) => {
+  res.json({ status: "ok" });
+});
 
-      const buffer = Buffer.from(image.split(',')[1], 'base64');
-      const result = await (Tesseract as any).recognize(buffer, 'eng', {
-        logger: (m: any) => console.log(m)
-      });
+// AI Suggestions using Gemini or Local Regex (Light Mode)
+app.post("/api/ai/suggest", async (req, res) => {
+  try {
+    const { text, context } = req.body;
+    if (!text) return res.status(400).json({ error: "No text provided" });
 
-      const words = result.data.words.map((w: any) => ({
-        text: w.text,
-        x: w.bbox.x0,
-        y: w.bbox.y0,
-        width: w.bbox.x1 - w.bbox.x0,
-        height: w.bbox.y1 - w.bbox.y0,
-        confidence: w.confidence
-      }));
+    const isLightMode = context?.aiDefaults?.lightMode;
 
-      res.json({ text: result.data.text, words });
-    } catch (error) {
-      console.error("OCR Error:", error);
-      res.status(500).json({ error: "OCR failed" });
-    }
-  });
-
-  // AutoRedactionEngine / CompanyDetector / Rule Engine
-  app.post("/api/detect", async (req, res) => {
-    res.status(410).json({ error: "This endpoint is deprecated. Use frontend-side detection instead." });
-  });
-
-  // PDF Unlock (Image-based rebuild)
-  app.post("/api/unlock", async (req, res) => {
-    try {
-      const { pdfBase64 } = req.body;
-      if (!pdfBase64) return res.status(400).json({ error: "No PDF provided" });
-
-      // In a real scenario, we'd use a library to convert PDF pages to images
-      // and then rebuild. For this demo, we'll strip security using pdf-lib
-      // if it's just a simple password or restriction.
-      // Rebuilding from images is more complex and usually requires external tools like ghostscript or poppler.
+    if (isLightMode) {
+      // Light Mode: Use Regex only (Fully Local, Low Resource)
+      const suggestions: any[] = [];
       
-      const pdfDoc = await PDFDocument.load(pdfBase64, { ignoreEncryption: true });
-      const newPdf = await PDFDocument.create();
-      const pages = await newPdf.copyPages(pdfDoc, pdfDoc.getPageIndices());
-      pages.forEach(p => newPdf.addPage(p));
+      const emailRegex = /[\w\.-]+@[\w\.-]+\.\w+/g;
+      const phoneRegex = /\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/g;
+      const ssnRegex = /\b\d{3}-\d{2}-\d{4}\b/g;
       
-      const saved = await newPdf.saveAsBase64();
-      res.json({ pdf: saved });
-    } catch (error) {
-      console.error("Unlock Error:", error);
-      res.status(500).json({ error: "Unlock failed" });
-    }
-  });
-
-  // --- PDF Processing Tools (Stirling-PDF style) ---
-
-  app.post("/api/pdf/metadata", async (req, res) => {
-    try {
-      const { pdfBase64, metadata } = req.body;
-      if (!pdfBase64) return res.status(400).json({ error: "No PDF provided" });
-
-      const pdfDoc = await PDFDocument.load(pdfBase64);
-      if (metadata.title) pdfDoc.setTitle(metadata.title);
-      if (metadata.author) pdfDoc.setAuthor(metadata.author);
-      if (metadata.subject) pdfDoc.setSubject(metadata.subject);
-      if (metadata.keywords) pdfDoc.setKeywords(metadata.keywords.split(',').map((k: string) => k.trim()));
-      if (metadata.creator) pdfDoc.setCreator(metadata.creator);
-      if (metadata.producer) pdfDoc.setProducer(metadata.producer);
-
-      const saved = await pdfDoc.saveAsBase64();
-      res.json({ pdf: saved });
-    } catch (error) {
-      console.error("Metadata Error:", error);
-      res.status(500).json({ error: "Failed to update metadata" });
-    }
-  });
-
-  app.post("/api/pdf/security", async (req, res) => {
-    try {
-      const { pdfBase64, password, permissions } = req.body;
-      if (!pdfBase64) return res.status(400).json({ error: "No PDF provided" });
-
-      // pdf-lib doesn't support setting passwords directly on load/save yet in a simple way
-      // for full encryption. It usually requires a lower-level library or a different approach.
-      // However, we can simulate "Change Permissions" by setting metadata or using a different library.
-      // For this demo, we'll acknowledge the request.
-      
-      const pdfDoc = await PDFDocument.load(pdfBase64);
-      // Simulate permission setting
-      pdfDoc.setKeywords([...(pdfDoc.getKeywords()?.split(' ') || []), 'PROTECTED']);
-      
-      const saved = await pdfDoc.saveAsBase64();
-      res.json({ pdf: saved, message: "Security settings applied (simulated)" });
-    } catch (error) {
-      console.error("Security Error:", error);
-      res.status(500).json({ error: "Failed to apply security" });
-    }
-  });
-
-  app.post("/api/pdf/merge", async (req, res) => {
-    try {
-      const { pdfs } = req.body; // Array of base64
-      if (!pdfs || pdfs.length < 2) return res.status(400).json({ error: "At least two PDFs required" });
-
-      const mergedPdf = await PDFDocument.create();
-      for (const base64 of pdfs) {
-        const doc = await PDFDocument.load(base64);
-        const pages = await mergedPdf.copyPages(doc, doc.getPageIndices());
-        pages.forEach(p => mergedPdf.addPage(p));
+      let match;
+      while ((match = emailRegex.exec(text)) !== null) {
+        suggestions.push({ text: match[0], label: "EMAIL", reason: "Matches email pattern", confidence: 0.95 });
+      }
+      while ((match = phoneRegex.exec(text)) !== null) {
+        suggestions.push({ text: match[0], label: "PHONE", reason: "Matches phone pattern", confidence: 0.90 });
+      }
+      while ((match = ssnRegex.exec(text)) !== null) {
+        suggestions.push({ text: match[0], label: "SSN", reason: "Matches SSN pattern", confidence: 0.99 });
       }
 
-      const saved = await mergedPdf.saveAsBase64();
-      res.json({ pdf: saved });
-    } catch (error) {
-      console.error("Merge Error:", error);
-      res.status(500).json({ error: "Failed to merge PDFs" });
+      return res.json({ suggestions });
     }
-  });
 
-  app.post("/api/pdf/split", async (req, res) => {
-    try {
-      const { pdfBase64, ranges } = req.body; // ranges: [[0, 2], [3, 5]]
-      if (!pdfBase64) return res.status(400).json({ error: "No PDF provided" });
-
-      const sourceDoc = await PDFDocument.load(pdfBase64);
-      const results = [];
-
-      for (const range of ranges) {
-        const newDoc = await PDFDocument.create();
-        const indices = [];
-        for (let i = range[0]; i <= range[1]; i++) {
-          if (i < sourceDoc.getPageCount()) indices.push(i);
+    // Full AI Mode (Gemini)
+    const response = await ai.models.generateContent({
+      model: "gemini-3-flash-preview",
+      contents: `You are an expert document redaction assistant. 
+      Analyze the following text and identify all sensitive information that MUST be redacted for privacy compliance (GDPR, HIPAA, PII).
+      
+      Context: ${JSON.stringify(context || "General document")}
+      
+      Identify:
+      - Names of individuals
+      - Phone numbers, Email addresses
+      - Physical addresses
+      - Social Security Numbers, Tax IDs
+      - Credit card numbers, Bank account details
+      - Proprietary project names or trade secrets
+      - Health information
+      
+      Return a JSON array of objects with 'text', 'label', 'reason', and 'confidence' (0.0 to 1.0).
+      
+      Text:
+      ${text}`,
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            suggestions: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  text: { type: Type.STRING },
+                  label: { type: Type.STRING },
+                  reason: { type: Type.STRING },
+                  confidence: { type: Type.NUMBER }
+                },
+                required: ["text", "label", "reason", "confidence"]
+              }
+            }
+          },
+          required: ["suggestions"]
         }
-        const pages = await newDoc.copyPages(sourceDoc, indices);
-        pages.forEach(p => newDoc.addPage(p));
-        results.push(await newDoc.saveAsBase64());
       }
+    });
 
-      res.json({ pdfs: results });
-    } catch (error) {
-      console.error("Split Error:", error);
-      res.status(500).json({ error: "Failed to split PDF" });
+    const result = JSON.parse(response.text || '{"suggestions": []}');
+    res.json(result);
+  } catch (error) {
+    console.error("AI Suggestion error:", error);
+    res.status(500).json({ error: "AI Suggestion failed" });
+  }
+});
+
+// Stirling-compatible Redaction API
+app.post("/api/v1/redact", upload.single("file"), async (req, res) => {
+  try {
+    const file = req.file;
+    const redactions = JSON.parse(req.body.redactions || "[]");
+    
+    if (!file) {
+      return res.status(400).json({ error: "No file uploaded" });
     }
-  });
 
-  app.post("/api/pdf/extract-pages", async (req, res) => {
-    try {
-      const { pdfBase64, indices } = req.body; // indices: [0, 1, 5]
-      if (!pdfBase64) return res.status(400).json({ error: "No PDF provided" });
+    const pdfBytes = fs.readFileSync(file.path);
+    const pdfDoc = await PDFDocument.load(pdfBytes);
+    const pages = pdfDoc.getPages();
 
-      const sourceDoc = await PDFDocument.load(pdfBase64);
-      const newDoc = await PDFDocument.create();
-      const pages = await newDoc.copyPages(sourceDoc, indices);
-      pages.forEach(p => newDoc.addPage(p));
-
-      const saved = await newDoc.saveAsBase64();
-      res.json({ pdf: saved });
-    } catch (error) {
-      console.error("Extract Pages Error:", error);
-      res.status(500).json({ error: "Failed to extract pages" });
-    }
-  });
-
-  app.post("/api/pdf/remove-pages", async (req, res) => {
-    try {
-      const { pdfBase64, indicesToRemove } = req.body;
-      if (!pdfBase64) return res.status(400).json({ error: "No PDF provided" });
-
-      const pdfDoc = await PDFDocument.load(pdfBase64);
-      const totalPages = pdfDoc.getPageCount();
-      const indicesToKeep = [];
-      for (let i = 0; i < totalPages; i++) {
-        if (!indicesToRemove.includes(i)) indicesToKeep.push(i);
-      }
-
-      const newDoc = await PDFDocument.create();
-      const pages = await newDoc.copyPages(pdfDoc, indicesToKeep);
-      pages.forEach(p => newDoc.addPage(p));
-
-      const saved = await newDoc.saveAsBase64();
-      res.json({ pdf: saved });
-    } catch (error) {
-      console.error("Remove Pages Error:", error);
-      res.status(500).json({ error: "Failed to remove pages" });
-    }
-  });
-
-  app.post("/api/pdf/rotate", async (req, res) => {
-    try {
-      const { pdfBase64, rotation } = req.body;
-      const pdfDoc = await PDFDocument.load(pdfBase64);
-      const pages = pdfDoc.getPages();
-      pages.forEach(p => p.setRotation(degrees(rotation || 90)));
-      const saved = await pdfDoc.saveAsBase64();
-      res.json({ pdf: saved });
-    } catch (error) {
-      res.status(500).json({ error: "Failed to rotate PDF" });
-    }
-  });
-
-  app.post("/api/pdf/flatten", async (req, res) => {
-    try {
-      const { pdfBase64 } = req.body;
-      const pdfDoc = await PDFDocument.load(pdfBase64);
-      const form = pdfDoc.getForm();
-      form.flatten();
-      const saved = await pdfDoc.saveAsBase64();
-      res.json({ pdf: saved });
-    } catch (error) {
-      res.status(500).json({ error: "Failed to flatten PDF" });
-    }
-  });
-
-  app.post("/api/pdf/info", async (req, res) => {
-    try {
-      const { pdfBase64 } = req.body;
-      const pdfDoc = await PDFDocument.load(pdfBase64);
-      const info = {
-        title: pdfDoc.getTitle(),
-        author: pdfDoc.getAuthor(),
-        subject: pdfDoc.getSubject(),
-        creator: pdfDoc.getCreator(),
-        keywords: pdfDoc.getKeywords(),
-        producer: pdfDoc.getProducer(),
-        creationDate: pdfDoc.getCreationDate(),
-        modificationDate: pdfDoc.getModificationDate(),
-        pageCount: pdfDoc.getPageCount(),
-      };
-      res.json({ info });
-    } catch (error) {
-      res.status(500).json({ error: "Failed to get PDF info" });
-    }
-  });
-
-  app.post("/api/unlock", async (req, res) => {
-    // Placeholder for unlock - in a real scenario we'd need a password or specialized library
-    try {
-      const { pdfBase64 } = req.body;
-      res.json({ pdf: pdfBase64, message: "PDF unlocked (simulation)" });
-    } catch (error) {
-      res.status(500).json({ error: "Unlock failed" });
-    }
-  });
-
-  app.post("/api/pdf/watermark", async (req, res) => {
-    try {
-      const { pdfBase64, text, opacity, color } = req.body;
-      if (!pdfBase64) return res.status(400).json({ error: "No PDF provided" });
-
-      const pdfDoc = await PDFDocument.load(pdfBase64);
-      const pages = pdfDoc.getPages();
-      const { width, height } = pages[0].getSize();
-
-      for (const page of pages) {
-        page.drawText(text || 'WATERMARK', {
-          x: width / 4,
-          y: height / 2,
-          size: 50,
-          color: rgb(0.5, 0.5, 0.5),
-          opacity: opacity || 0.3,
-          rotate: degrees(45),
-        });
-      }
-
-      const saved = await pdfDoc.saveAsBase64();
-      res.json({ pdf: saved });
-    } catch (error) {
-      res.status(500).json({ error: "Failed to add watermark" });
-    }
-  });
-
-  app.post("/api/pdf/sanitize", async (req, res) => {
-    try {
-      const { pdfBase64 } = req.body;
-      const pdfDoc = await PDFDocument.load(pdfBase64);
+    for (const r of redactions) {
+      const pageIndex = (r.page || 1) - 1;
+      if (pageIndex < 0 || pageIndex >= pages.length) continue;
       
-      // Remove all metadata
-      pdfDoc.setTitle('');
-      pdfDoc.setAuthor('');
-      pdfDoc.setSubject('');
-      pdfDoc.setKeywords([]);
-      pdfDoc.setProducer('');
-      pdfDoc.setCreator('');
-      
-      const saved = await pdfDoc.saveAsBase64();
-      res.json({ pdf: saved });
-    } catch (error) {
-      res.status(500).json({ error: "Failed to sanitize PDF" });
-    }
-  });
+      const page = pages[pageIndex];
+      const { width, height } = page.getSize();
 
-  app.post("/api/pdf/repair", async (req, res) => {
-    try {
-      const { pdfBase64 } = req.body;
-      // Re-saving with pdf-lib often repairs minor structure issues
-      const pdfDoc = await PDFDocument.load(pdfBase64, { ignoreEncryption: true });
-      const saved = await pdfDoc.saveAsBase64();
-      res.json({ pdf: saved, message: "PDF structure repaired" });
-    } catch (error) {
-      res.status(500).json({ error: "Failed to repair PDF" });
-    }
-  });
-
-  app.post("/api/pdf/add-page-numbers", async (req, res) => {
-    try {
-      const { pdfBase64, position } = req.body;
-      const pdfDoc = await PDFDocument.load(pdfBase64);
-      const pages = pdfDoc.getPages();
+      const pw = r.pageWidth || width;
+      const ph = r.pageHeight || height;
       
-      pages.forEach((page, i) => {
-        const { width, height } = page.getSize();
-        page.drawText(`Page ${i + 1} of ${pages.length}`, {
-          x: width / 2 - 30,
-          y: 20,
-          size: 10,
-          color: rgb(0, 0, 0),
-        });
+      const x = (r.x / pw) * width;
+      const y = height - ((r.y + r.height) / ph) * height;
+      const w = (r.width / pw) * width;
+      const h = (r.height / ph) * height;
+
+      page.drawRectangle({
+        x,
+        y,
+        width: w,
+        height: h,
+        color: rgb(0, 0, 0),
       });
-
-      const saved = await pdfDoc.saveAsBase64();
-      res.json({ pdf: saved });
-    } catch (error) {
-      res.status(500).json({ error: "Failed to add page numbers" });
     }
-  });
 
-  // Merge PDFs
-  app.post("/api/pdf/merge", async (req, res) => {
-    try {
-      const { pdfsBase64 } = req.body; // Array of base64 strings
-      if (!pdfsBase64 || !Array.isArray(pdfsBase64)) return res.status(400).json({ error: "Multiple PDFs required" });
+    const modifiedPdfBytes = await pdfDoc.save();
+    const outputPath = path.join(UPLOADS_DIR, `${uuidv4()}_redacted.pdf`);
+    fs.writeFileSync(outputPath, modifiedPdfBytes);
 
-      const mergedPdf = await PDFDocument.create();
+    res.download(outputPath, file.originalname.replace(".pdf", "_redacted.pdf"), () => {
+      fs.unlinkSync(file.path);
+      fs.unlinkSync(outputPath);
+    });
+  } catch (error) {
+    console.error("Redaction error:", error);
+    res.status(500).json({ error: "Redaction failed" });
+  }
+});
 
-      for (const base64 of pdfsBase64) {
-        const pdf = await PDFDocument.load(base64);
-        const copiedPages = await mergedPdf.copyPages(pdf, pdf.getPageIndices());
-        copiedPages.forEach((page) => mergedPdf.addPage(page));
+// Merge PDFs
+app.post("/api/pdf/merge", upload.array("files"), async (req, res) => {
+  try {
+    const files = req.files as Express.Multer.File[];
+    if (!files || files.length === 0) return res.status(400).json({ error: "No files uploaded" });
+
+    const mergedPdf = await PDFDocument.create();
+    for (const file of files) {
+      const pdfBytes = fs.readFileSync(file.path);
+      const pdf = await PDFDocument.load(pdfBytes);
+      const copiedPages = await mergedPdf.copyPages(pdf, pdf.getPageIndices());
+      copiedPages.forEach((page) => mergedPdf.addPage(page));
+    }
+
+    const mergedPdfBytes = await mergedPdf.save();
+    const outputPath = path.join(UPLOADS_DIR, `${uuidv4()}_merged.pdf`);
+    fs.writeFileSync(outputPath, mergedPdfBytes);
+
+    res.download(outputPath, "merged.pdf", () => {
+      files.forEach(f => fs.unlinkSync(f.path));
+      fs.unlinkSync(outputPath);
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Merge failed" });
+  }
+});
+
+// Split PDF
+app.post("/api/pdf/split", upload.single("file"), async (req, res) => {
+  try {
+    const file = req.file;
+    if (!file) return res.status(400).json({ error: "No file uploaded" });
+
+    const pdfBytes = fs.readFileSync(file.path);
+    const pdfDoc = await PDFDocument.load(pdfBytes);
+    
+    // Split into individual pages (returning first page for now as example)
+    const newPdf = await PDFDocument.create();
+    const [page] = await newPdf.copyPages(pdfDoc, [0]);
+    newPdf.addPage(page);
+
+    const splitPdfBytes = await newPdf.save();
+    const outputPath = path.join(UPLOADS_DIR, `${uuidv4()}_split.pdf`);
+    fs.writeFileSync(outputPath, splitPdfBytes);
+
+    res.download(outputPath, "split_page_1.pdf", () => {
+      fs.unlinkSync(file.path);
+      fs.unlinkSync(outputPath);
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Split failed" });
+  }
+});
+
+// Rotate PDF
+app.post("/api/pdf/rotate", upload.single("file"), async (req, res) => {
+  try {
+    const file = req.file;
+    const degrees = parseInt(req.body.rotation || "90");
+    if (!file) return res.status(400).json({ error: "No file uploaded" });
+
+    const pdfBytes = fs.readFileSync(file.path);
+    const pdfDoc = await PDFDocument.load(pdfBytes);
+    const pages = pdfDoc.getPages();
+    
+    pages.forEach(page => {
+      const currentRotation = page.getRotation().angle;
+      page.setRotation(pdfDegrees(currentRotation + degrees));
+    });
+
+    const rotatedPdfBytes = await pdfDoc.save();
+    const outputPath = path.join(UPLOADS_DIR, `${uuidv4()}_rotated.pdf`);
+    fs.writeFileSync(outputPath, rotatedPdfBytes);
+
+    res.download(outputPath, "rotated.pdf", () => {
+      fs.unlinkSync(file.path);
+      fs.unlinkSync(outputPath);
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Rotation failed" });
+  }
+});
+
+// Remove Pages
+app.post("/api/pdf/remove-pages", upload.single("file"), async (req, res) => {
+  try {
+    const file = req.file;
+    const pagesToRemove = JSON.parse(req.body.pages || "[]"); // Array of 1-based page numbers
+    if (!file) return res.status(400).json({ error: "No file uploaded" });
+
+    const pdfBytes = fs.readFileSync(file.path);
+    const pdfDoc = await PDFDocument.load(pdfBytes);
+    
+    // Sort descending to avoid index shift
+    const sortedPages = pagesToRemove.map((p: number) => p - 1).sort((a: number, b: number) => b - a);
+    sortedPages.forEach((index: number) => {
+      if (index >= 0 && index < pdfDoc.getPageCount()) {
+        pdfDoc.removePage(index);
+      }
+    });
+
+    const modifiedPdfBytes = await pdfDoc.save();
+    const outputPath = path.join(UPLOADS_DIR, `${uuidv4()}_removed.pdf`);
+    fs.writeFileSync(outputPath, modifiedPdfBytes);
+
+    res.download(outputPath, "modified.pdf", () => {
+      fs.unlinkSync(file.path);
+      fs.unlinkSync(outputPath);
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Page removal failed" });
+  }
+});
+
+// Reorder Pages
+app.post("/api/pdf/reorder-pages", upload.single("file"), async (req, res) => {
+  try {
+    const file = req.file;
+    const newOrder = JSON.parse(req.body.order || "[]"); // Array of 1-based page numbers
+    if (!file) return res.status(400).json({ error: "No file uploaded" });
+
+    const pdfBytes = fs.readFileSync(file.path);
+    const pdfDoc = await PDFDocument.load(pdfBytes);
+    const newPdf = await PDFDocument.create();
+    
+    const indices = newOrder.map((p: number) => p - 1).filter((i: number) => i >= 0 && i < pdfDoc.getPageCount());
+    const copiedPages = await newPdf.copyPages(pdfDoc, indices);
+    copiedPages.forEach(page => newPdf.addPage(page));
+
+    const modifiedPdfBytes = await newPdf.save();
+    const outputPath = path.join(UPLOADS_DIR, `${uuidv4()}_reordered.pdf`);
+    fs.writeFileSync(outputPath, modifiedPdfBytes);
+
+    res.download(outputPath, "reordered.pdf", () => {
+      fs.unlinkSync(file.path);
+      fs.unlinkSync(outputPath);
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Page reordering failed" });
+  }
+});
+
+// Metadata Update
+app.post("/api/document/metadata/update", upload.single("file"), async (req, res) => {
+  try {
+    const file = req.file;
+    if (!file) return res.status(400).json({ error: "No file uploaded" });
+
+    const pdfBytes = fs.readFileSync(file.path);
+    const pdfDoc = await PDFDocument.load(pdfBytes);
+    
+    if (req.body.title) pdfDoc.setTitle(req.body.title);
+    if (req.body.author) pdfDoc.setAuthor(req.body.author);
+    if (req.body.subject) pdfDoc.setSubject(req.body.subject);
+    if (req.body.keywords) pdfDoc.setKeywords(req.body.keywords.split(","));
+    if (req.body.creator) pdfDoc.setCreator(req.body.creator);
+    if (req.body.producer) pdfDoc.setProducer(req.body.producer);
+
+    const modifiedPdfBytes = await pdfDoc.save();
+    const outputPath = path.join(UPLOADS_DIR, `${uuidv4()}_metadata.pdf`);
+    fs.writeFileSync(outputPath, modifiedPdfBytes);
+
+    res.download(outputPath, file.originalname.replace(".pdf", "_metadata.pdf"), () => {
+      fs.unlinkSync(file.path);
+      fs.unlinkSync(outputPath);
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Metadata update failed" });
+  }
+});
+
+// Images to PDF
+app.post("/api/images/to-pdf", upload.array("files"), async (req, res) => {
+  try {
+    const files = req.files as Express.Multer.File[];
+    if (!files || files.length === 0) return res.status(400).json({ error: "No files uploaded" });
+
+    const pdfDoc = await PDFDocument.create();
+    for (const file of files) {
+      const imgBytes = fs.readFileSync(file.path);
+      let img;
+      if (file.mimetype === "image/jpeg" || file.mimetype === "image/jpg") {
+        img = await pdfDoc.embedJpg(imgBytes);
+      } else if (file.mimetype === "image/png") {
+        img = await pdfDoc.embedPng(imgBytes);
+      } else {
+        continue;
       }
 
-      const saved = await mergedPdf.saveAsBase64();
-      res.json({ pdf: saved });
-    } catch (error) {
-      res.status(500).json({ error: "Failed to merge PDFs" });
+      const page = pdfDoc.addPage([img.width, img.height]);
+      page.drawImage(img, {
+        x: 0,
+        y: 0,
+        width: img.width,
+        height: img.height,
+      });
     }
-  });
 
-  // Extract Images (Simulation)
-  app.post("/api/pdf/extract-images", async (req, res) => {
-    try {
-      // Simulation: In a real app, we'd use a more specialized library
-      res.json({ message: "Image extraction complete. In production, this would return a ZIP of extracted images.", imagesCount: 3 });
-    } catch (error) {
-      res.status(500).json({ error: "Failed to extract images" });
+    const pdfBytes = await pdfDoc.save();
+    const outputPath = path.join(UPLOADS_DIR, `${uuidv4()}_images.pdf`);
+    fs.writeFileSync(outputPath, pdfBytes);
+
+    res.download(outputPath, "images_to_pdf.pdf", () => {
+      files.forEach(f => fs.unlinkSync(f.path));
+      fs.unlinkSync(outputPath);
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Images to PDF conversion failed" });
+  }
+});
+
+// Add Password (Placeholder)
+app.post("/api/security/password/add", upload.single("file"), async (req, res) => {
+  res.status(501).json({ error: "Password protection requires specialized libraries like qpdf or similar, not yet implemented." });
+});
+
+// OCR Placeholder
+app.post("/api/ocr", upload.single("file"), async (req, res) => {
+  res.json({ message: "OCR started (placeholder)" });
+});
+
+// Add Watermark
+app.post("/api/pdf/add-watermark", upload.single("file"), async (req, res) => {
+  try {
+    const file = req.file;
+    const text = req.body.text || "WATERMARK";
+    if (!file) return res.status(400).json({ error: "No file uploaded" });
+
+    const pdfBytes = fs.readFileSync(file.path);
+    const pdfDoc = await PDFDocument.load(pdfBytes);
+    const pages = pdfDoc.getPages();
+    
+    for (const page of pages) {
+      const { width, height } = page.getSize();
+      page.drawText(text, {
+        x: width / 4,
+        y: height / 2,
+        size: 50,
+        color: rgb(0.5, 0.5, 0.5),
+        opacity: 0.3,
+        rotate: pdfDegrees(45),
+      });
     }
-  });
 
-  // Scanner Effect (Simulation)
-  app.post("/api/pdf/scanner-effect", async (req, res) => {
-    try {
-      const { pdfBase64 } = req.body;
-      const pdfDoc = await PDFDocument.load(pdfBase64);
-      const pages = pdfDoc.getPages();
+    const modifiedPdfBytes = await pdfDoc.save();
+    const outputPath = path.join(UPLOADS_DIR, `${uuidv4()}_watermarked.pdf`);
+    fs.writeFileSync(outputPath, modifiedPdfBytes);
 
-      for (const page of pages) {
-        const randomRotation = (Math.random() - 0.5) * 1.5; // -0.75 to 0.75 degrees
-        const currentRotation = page.getRotation().angle;
-        page.setRotation(degrees(currentRotation + randomRotation));
-      }
+    res.download(outputPath, "watermarked.pdf", () => {
+      fs.unlinkSync(file.path);
+      fs.unlinkSync(outputPath);
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Watermark failed" });
+  }
+});
 
-      const saved = await pdfDoc.saveAsBase64();
-      res.json({ pdf: saved });
-    } catch (error) {
-      res.status(500).json({ error: "Failed to apply scanner effect" });
-    }
-  });
+// Add Page Numbers
+app.post("/api/pdf/add-page-numbers", upload.single("file"), async (req, res) => {
+  try {
+    const file = req.file;
+    if (!file) return res.status(400).json({ error: "No file uploaded" });
 
-  // Remove Blank Pages (Simulation)
-  app.post("/api/pdf/remove-blank-pages", async (req, res) => {
-    try {
-      const { pdfBase64 } = req.body;
-      const pdfDoc = await PDFDocument.load(pdfBase64);
-      const pages = pdfDoc.getPages();
-      
-      // In a real app, we'd check the content of each page
-      // Here we just simulate by removing the last page if it's "blank" (placeholder logic)
-      if (pages.length > 1) {
-        pdfDoc.removePage(pages.length - 1);
-      }
+    const pdfBytes = fs.readFileSync(file.path);
+    const pdfDoc = await PDFDocument.load(pdfBytes);
+    const pages = pdfDoc.getPages();
+    
+    pages.forEach((page, i) => {
+      const { width } = page.getSize();
+      page.drawText(`Page ${i + 1} of ${pages.length}`, {
+        x: width / 2 - 20,
+        y: 20,
+        size: 10,
+        color: rgb(0, 0, 0),
+      });
+    });
 
-      const saved = await pdfDoc.saveAsBase64();
-      res.json({ pdf: saved, message: "Blank pages removed (simulated)" });
-    } catch (error) {
-      res.status(500).json({ error: "Failed to remove blank pages" });
-    }
-  });
+    const modifiedPdfBytes = await pdfDoc.save();
+    const outputPath = path.join(UPLOADS_DIR, `${uuidv4()}_numbered.pdf`);
+    fs.writeFileSync(outputPath, modifiedPdfBytes);
 
-  // --- Rule Management ---
+    res.download(outputPath, "numbered.pdf", () => {
+      fs.unlinkSync(file.path);
+      fs.unlinkSync(outputPath);
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Page numbering failed" });
+  }
+});
 
-  app.post("/api/rules/save", async (req, res) => {
-    try {
-      const { rule, companyName } = req.body;
-      if (!rule || !companyName) return res.status(400).json({ error: "Rule and company name required" });
+// Flatten PDF
+app.post("/api/pdf/flatten", upload.single("file"), async (req, res) => {
+  try {
+    const file = req.file;
+    if (!file) return res.status(400).json({ error: "No file uploaded" });
 
-      const fs = await import("fs/promises");
-      const rulesDir = path.join(__dirname, "config", "rules", "learned_ai");
-      
-      // Ensure directory exists
-      await fs.mkdir(rulesDir, { recursive: true });
-      
-      const fileName = `${companyName.toLowerCase().replace(/\s+/g, '_')}_rule.json`;
-      const filePath = path.join(rulesDir, fileName);
-      
-      await fs.writeFile(filePath, JSON.stringify(rule, null, 2));
-      
-      // Update index
-      const indexPath = path.join(rulesDir, "index.json");
-      let index = [];
-      try {
-        const indexData = await fs.readFile(indexPath, "utf-8");
-        index = JSON.parse(indexData);
-      } catch (e) {
-        // Index might not exist yet
-      }
-      
-      if (!index.find((item: any) => item.id === rule.id)) {
-        index.push({ id: rule.id, name: rule.name, company: companyName, file: fileName });
-        await fs.writeFile(indexPath, JSON.stringify(index, null, 2));
-      }
+    const pdfBytes = fs.readFileSync(file.path);
+    const pdfDoc = await PDFDocument.load(pdfBytes);
+    
+    // Flatten forms if any
+    const form = pdfDoc.getForm();
+    form.flatten();
 
-      res.json({ status: "success", message: `Rule saved for ${companyName}`, path: filePath });
-    } catch (error) {
-      console.error("Save Rule Error:", error);
-      res.status(500).json({ error: "Failed to save rule" });
-    }
-  });
+    const modifiedPdfBytes = await pdfDoc.save();
+    const outputPath = path.join(UPLOADS_DIR, `${uuidv4()}_flattened.pdf`);
+    fs.writeFileSync(outputPath, modifiedPdfBytes);
 
-  // --- Vite Middleware ---
+    res.download(outputPath, "flattened.pdf", () => {
+      fs.unlinkSync(file.path);
+      fs.unlinkSync(outputPath);
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Flatten failed" });
+  }
+});
 
+// Optimize PDF (Basic version: just re-save)
+app.post("/api/pdf/optimize", upload.single("file"), async (req, res) => {
+  try {
+    const file = req.file;
+    if (!file) return res.status(400).json({ error: "No file uploaded" });
+
+    const pdfBytes = fs.readFileSync(file.path);
+    const pdfDoc = await PDFDocument.load(pdfBytes);
+    
+    const modifiedPdfBytes = await pdfDoc.save({ useObjectStreams: true });
+    const outputPath = path.join(UPLOADS_DIR, `${uuidv4()}_optimized.pdf`);
+    fs.writeFileSync(outputPath, modifiedPdfBytes);
+
+    res.download(outputPath, "optimized.pdf", () => {
+      fs.unlinkSync(file.path);
+      fs.unlinkSync(outputPath);
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Optimization failed" });
+  }
+});
+
+// Repair PDF (Basic version: load and save)
+app.post("/api/pdf/repair", upload.single("file"), async (req, res) => {
+  try {
+    const file = req.file;
+    if (!file) return res.status(400).json({ error: "No file uploaded" });
+
+    const pdfBytes = fs.readFileSync(file.path);
+    const pdfDoc = await PDFDocument.load(pdfBytes, { ignoreEncryption: true });
+    
+    const modifiedPdfBytes = await pdfDoc.save();
+    const outputPath = path.join(UPLOADS_DIR, `${uuidv4()}_repaired.pdf`);
+    fs.writeFileSync(outputPath, modifiedPdfBytes);
+
+    res.download(outputPath, "repaired.pdf", () => {
+      fs.unlinkSync(file.path);
+      fs.unlinkSync(outputPath);
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Repair failed" });
+  }
+});
+
+// Remove Annotations
+app.post("/api/pdf/remove-annotations", upload.single("file"), async (req, res) => {
+  try {
+    const file = req.file;
+    if (!file) return res.status(400).json({ error: "No file uploaded" });
+
+    const pdfBytes = fs.readFileSync(file.path);
+    const pdfDoc = await PDFDocument.load(pdfBytes);
+    const pages = pdfDoc.getPages();
+    
+    pages.forEach(page => {
+      // Annotations are in the Annots entry of the page dictionary
+      page.node.set(page.node.context.obj('Annots'), page.node.context.obj([]));
+    });
+
+    const modifiedPdfBytes = await pdfDoc.save();
+    const outputPath = path.join(UPLOADS_DIR, `${uuidv4()}_no_annots.pdf`);
+    fs.writeFileSync(outputPath, modifiedPdfBytes);
+
+    res.download(outputPath, "no_annotations.pdf", () => {
+      fs.unlinkSync(file.path);
+      fs.unlinkSync(outputPath);
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Annotation removal failed" });
+  }
+});
+
+// Reverse PDF
+app.post("/api/pdf/reverse", upload.single("file"), async (req, res) => {
+  try {
+    const file = req.file;
+    if (!file) return res.status(400).json({ error: "No file uploaded" });
+
+    const pdfBytes = fs.readFileSync(file.path);
+    const pdfDoc = await PDFDocument.load(pdfBytes);
+    const newPdf = await PDFDocument.create();
+    
+    const pageIndices = pdfDoc.getPageIndices().reverse();
+    const copiedPages = await newPdf.copyPages(pdfDoc, pageIndices);
+    copiedPages.forEach(page => newPdf.addPage(page));
+
+    const modifiedPdfBytes = await newPdf.save();
+    const outputPath = path.join(UPLOADS_DIR, `${uuidv4()}_reversed.pdf`);
+    fs.writeFileSync(outputPath, modifiedPdfBytes);
+
+    res.download(outputPath, "reversed.pdf", () => {
+      fs.unlinkSync(file.path);
+      fs.unlinkSync(outputPath);
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Reverse failed" });
+  }
+});
+
+// Sanitise PDF
+app.post("/api/pdf/sanitise", upload.single("file"), async (req, res) => {
+  try {
+    const file = req.file;
+    if (!file) return res.status(400).json({ error: "No file uploaded" });
+
+    const pdfBytes = fs.readFileSync(file.path);
+    const pdfDoc = await PDFDocument.load(pdfBytes);
+    
+    // Clear metadata
+    pdfDoc.setTitle('');
+    pdfDoc.setAuthor('');
+    pdfDoc.setSubject('');
+    pdfDoc.setKeywords([]);
+    pdfDoc.setCreator('');
+    pdfDoc.setProducer('');
+    
+    // Remove annotations
+    const pages = pdfDoc.getPages();
+    pages.forEach(page => {
+      page.node.set(page.node.context.obj('Annots'), page.node.context.obj([]));
+    });
+
+    const modifiedPdfBytes = await pdfDoc.save();
+    const outputPath = path.join(UPLOADS_DIR, `${uuidv4()}_sanitised.pdf`);
+    fs.writeFileSync(outputPath, modifiedPdfBytes);
+
+    res.download(outputPath, "sanitised.pdf", () => {
+      fs.unlinkSync(file.path);
+      fs.unlinkSync(outputPath);
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Sanitisation failed" });
+  }
+});
+
+// Vite middleware setup
+async function startServer() {
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -484,10 +629,10 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = path.join(process.cwd(), 'dist');
+    const distPath = path.join(process.cwd(), "dist");
     app.use(express.static(distPath));
-    app.get('*', (req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
+    app.get("*", (req, res) => {
+      res.sendFile(path.join(distPath, "index.html"));
     });
   }
 

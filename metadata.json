@@ -1,5 +1,5 @@
 {
-  "name": "Redactronix - RASESH AI PDF Suite",
-  "description": "Industrial-grade PDF Suite (RASESH: Real AI Secure Extract Shield Hub) featuring Redactronix redaction, AI Training Studio, and 20+ Stirling-PDF tools for secure, offline document processing.",
+  "name": "Stirling-PDF Clone",
+  "description": "A robust, locally hosted, web-based PDF manipulation tool for merging, splitting, rotating, compressing, and more. 100% private and secure.",
   "requestFramePermissions": []
 }

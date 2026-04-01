@@ -287,7 +287,7 @@ export async function trainModelFromFiles(originalText: string, redactedText?: s
 
 export function detectCompanyFromText(text: string, existingRules: any[]): any | null {
   const lowerText = text.toLowerCase();
-  for (const rule of existingRules) {
+  for (const rule of (existingRules || [])) {
     // Check identifiers
     if (rule.identifiers) {
       for (const id of rule.identifiers) {

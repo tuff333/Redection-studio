@@ -33,7 +33,7 @@ export function ToolDialog({ tool, onClose, addAlert }: ToolDialogProps) {
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files) {
-      if (tool.name === 'Merge') {
+      if (tool.name === 'Merge PDF' || tool.name === 'JPG to PDF' || tool.name === 'PNG to PDF') {
         setFiles(prev => [...prev, ...Array.from(e.target.files!)]);
       } else if (e.target.files[0]) {
         setFile(e.target.files[0]);
@@ -69,130 +69,118 @@ export function ToolDialog({ tool, onClose, addAlert }: ToolDialogProps) {
     setIsProcessing(true);
 
     try {
-      if (tool.name === 'Merge') {
-        const pdfsBase64 = await Promise.all(files.map(f => {
-          return new Promise<string>((resolve) => {
-            const reader = new FileReader();
-            reader.onload = () => resolve(reader.result as string);
-            reader.readAsDataURL(f);
-          });
-        }));
+      const formData = new FormData();
+      let endpoint = '';
 
-        const response = await fetch('/api/pdf/merge', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ pdfsBase64 })
-        });
-
-        const data = await response.json();
-        if (data.pdf) {
-          setResult(data.pdf);
-          addAlert('success', 'PDFs merged successfully!');
-        } else {
-          throw new Error(data.error || 'Merge failed');
-        }
-        setIsProcessing(false);
-        return;
-      }
-
-      const reader = new FileReader();
-      reader.onload = async () => {
-        const base64 = reader.result as string;
-        let endpoint = '';
-        let body: any = { pdfBase64: base64 };
+      if (tool.name === 'Merge PDF' || tool.name === 'JPG to PDF' || tool.name === 'PNG to PDF') {
+        if (files.length === 0) return;
+        endpoint = tool.name === 'Merge PDF' ? '/api/pdf/merge' : '/api/images/to-pdf';
+        files.forEach(f => formData.append('files', f));
+      } else {
+        if (!file) return;
+        formData.append('file', file);
 
         switch (tool.name) {
           case 'Change Metadata':
-            endpoint = '/api/pdf/metadata';
-            body.metadata = metadata;
+            endpoint = '/api/document/metadata/update';
+            formData.append('title', metadata.title);
+            formData.append('author', metadata.author);
+            formData.append('subject', metadata.subject);
+            formData.append('keywords', metadata.keywords);
             break;
           case 'Add Password':
-          case 'Change Permissions':
-            endpoint = '/api/pdf/security';
-            body.password = security.password || 'demo123';
-            body.permissions = security.permissions;
+            endpoint = '/api/security/password/add';
+            formData.append('password', security.password || 'demo123');
             break;
-          case 'Add Watermark':
-            endpoint = '/api/pdf/watermark';
-            body.text = watermark.text;
-            body.opacity = parseFloat(watermark.opacity.toString());
+          case 'Change Metadata':
+            endpoint = '/api/pdf/update-metadata';
+            formData.append('metadata', JSON.stringify(metadata));
             break;
           case 'Sanitise':
-            endpoint = '/api/pdf/sanitize';
+            endpoint = '/api/pdf/sanitise';
             break;
-          case 'Repair':
-            endpoint = '/api/pdf/repair';
+          case 'Remove Annotations':
+            endpoint = '/api/pdf/remove-annotations';
+            break;
+          case 'Reverse PDF':
+            endpoint = '/api/pdf/reverse';
+            break;
+          case 'Add Watermark':
+            endpoint = '/api/pdf/add-watermark';
+            formData.append('text', watermark.text);
+            formData.append('opacity', watermark.opacity.toString());
             break;
           case 'Add Page Numbers':
             endpoint = '/api/pdf/add-page-numbers';
             break;
-          case 'Split':
-            endpoint = '/api/pdf/split';
-            const splitIndices = parsePageRange(pageRange);
-            // Convert indices to ranges for the backend
-            body.ranges = splitIndices.map(i => [i, i]); 
-            break;
-          case 'Extract Pages':
-            endpoint = '/api/pdf/extract-pages';
-            body.indices = parsePageRange(pageRange);
-            break;
-          case 'Remove Pages':
-            endpoint = '/api/pdf/remove-pages';
-            body.indicesToRemove = parsePageRange(pageRange);
-            break;
-          case 'Rotate':
-            endpoint = '/api/pdf/rotate';
-            body.rotation = rotation;
-            break;
           case 'Flatten':
             endpoint = '/api/pdf/flatten';
             break;
-          case 'Get ALL Info on PDF':
-            endpoint = '/api/pdf/info';
+          case 'Repair PDF':
+            endpoint = '/api/pdf/repair';
             break;
-          case 'Unlock PDF Forms':
-            endpoint = '/api/unlock';
+          case 'Rotate':
+            endpoint = '/api/pdf/rotate';
+            formData.append('rotation', rotation.toString());
             break;
-          case 'Extract Images':
-            endpoint = '/api/pdf/extract-images';
+          case 'Split':
+            endpoint = '/api/pdf/split';
             break;
-          case 'Scanner Effect':
-            endpoint = '/api/pdf/scanner-effect';
+          case 'Extract Pages':
+            endpoint = '/api/extraction/pages';
+            formData.append('page_range', pageRange);
             break;
-          case 'Remove Blank pages':
-            endpoint = '/api/pdf/remove-blank-pages';
+          case 'Remove Pages':
+            endpoint = '/api/pdf/remove-pages';
+            formData.append('pages', JSON.stringify(parsePageRange(pageRange).map(i => i + 1)));
+            break;
+          case 'Reorganize Pages':
+            endpoint = '/api/pdf/reorder-pages';
+            formData.append('order', JSON.stringify(parsePageRange(pageRange).map(i => i + 1)));
+            break;
+          case 'OCR PDF':
+            endpoint = '/api/ocr';
+            break;
+          case 'Compress PDF':
+            endpoint = '/api/pdf/optimize';
+            break;
+          case 'Merge PDF':
+            endpoint = '/api/pdf/merge';
+            files.forEach(f => formData.append('files', f));
+            break;
+          case 'JPG to PDF':
+          case 'PNG to PDF':
+            endpoint = '/api/images/to-pdf';
+            files.forEach(f => formData.append('files', f));
             break;
           default:
-            // Generic fallback or simulated success
+            // Generic fallback
             await new Promise(resolve => setTimeout(resolve, 1500));
             addAlert('info', `Simulated ${tool.name} processing.`);
             setIsProcessing(false);
             return;
         }
+      }
 
-        const response = await fetch(endpoint, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body)
-        });
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        body: formData
+      });
 
-        const data = await response.json();
-        if (data.pdf) {
-          setResult(data.pdf);
-          addAlert('success', `${tool.name} completed successfully!`);
-        } else if (data.pdfs) {
-          setResult(data.pdfs[0]); // Just show the first one for now
-          addAlert('success', `${tool.name} completed! (Showing first part)`);
-        } else if (data.info) {
-          console.log('PDF Info:', data.info);
-          addAlert('success', `PDF Info retrieved! Check console for details.`);
-          setIsProcessing(false);
-          return;
-        } else {
-          throw new Error(data.error || 'Processing failed');
-        }
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: 'Processing failed' }));
+        throw new Error(errorData.error || `Server returned ${response.status}`);
+      }
+
+      const blob = await response.blob();
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        const base64data = (reader.result as string).split(',')[1];
+        setResult(base64data);
+        addAlert('success', `${tool.name} completed successfully!`);
       };
-      reader.readAsDataURL(file);
+      reader.readAsDataURL(blob);
+
     } catch (error: any) {
       addAlert('error', error.message);
     } finally {
@@ -242,23 +230,40 @@ export function ToolDialog({ tool, onClose, addAlert }: ToolDialogProps) {
           {!file && files.length === 0 ? (
             <label className="flex flex-col items-center justify-center h-64 border-2 border-dashed border-neutral-200 dark:border-neutral-800 rounded-3xl cursor-pointer hover:border-black dark:hover:border-white transition-all bg-neutral-50 dark:bg-neutral-800/50">
               <FileUp className="w-12 h-12 text-neutral-400 mb-4" />
-              <p className="text-lg font-bold">{tool.name === 'Merge' ? 'Select PDFs to merge' : 'Select a PDF to process'}</p>
+              <p className="text-lg font-bold">
+                {tool.name === 'Merge PDF' ? 'Select PDFs to merge' : 
+                 (tool.name === 'JPG to PDF' || tool.name === 'PNG to PDF') ? 'Select images to convert' : 
+                 'Select a PDF to process'}
+              </p>
               <p className="text-sm text-neutral-500">or drag and drop here</p>
-              <input type="file" className="hidden" accept=".pdf" multiple={tool.name === 'Merge'} onChange={handleFileUpload} />
+              <input 
+                type="file" 
+                className="hidden" 
+                accept={tool.name.includes('JPG') || tool.name.includes('PNG') || tool.name.includes('image') ? 'image/*' : '.pdf'} 
+                multiple={tool.name === 'Merge PDF' || tool.name === 'JPG to PDF' || tool.name === 'PNG to PDF'} 
+                onChange={handleFileUpload} 
+              />
             </label>
           ) : (
             <div className="space-y-6">
-              {tool.name === 'Merge' ? (
+              {(tool.name === 'Merge PDF' || tool.name === 'JPG to PDF' || tool.name === 'PNG to PDF') ? (
                 <div className="space-y-3">
                   <div className="flex items-center justify-between">
                     <h3 className="text-xs font-bold uppercase tracking-widest text-neutral-400">Selected Files ({files.length})</h3>
                     <button 
-                      onClick={() => document.getElementById('merge-upload')?.click()}
+                      onClick={() => document.getElementById('multi-upload')?.click()}
                       className="text-[10px] font-bold text-black dark:text-white uppercase tracking-widest hover:underline"
                     >
                       Add More
                     </button>
-                    <input id="merge-upload" type="file" className="hidden" accept=".pdf" multiple onChange={handleFileUpload} />
+                    <input 
+                      id="multi-upload" 
+                      type="file" 
+                      className="hidden" 
+                      accept={tool.name.includes('JPG') || tool.name.includes('PNG') || tool.name.includes('image') ? 'image/*' : '.pdf'} 
+                      multiple 
+                      onChange={handleFileUpload} 
+                    />
                   </div>
                   <div className="space-y-2 max-h-48 overflow-y-auto pr-2">
                     {files.map((f, i) => (

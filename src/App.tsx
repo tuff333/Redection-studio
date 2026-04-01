@@ -6,7 +6,7 @@ import {
   Undo, Redo, Undo2, Redo2, Search, SearchX, ChevronLeft, ChevronRight, Zap, ChevronDown, LayoutGrid, Lock, Unlock, FileUp, Files, Settings2, Info, HelpCircle, ExternalLink, ArrowLeft,
   Type as TypeIcon, Square, Highlighter, Sun, Moon,
   Monitor, Palette, Keyboard, X, Plus, Play, RefreshCw, Sparkles, Check,
-  Barcode, QrCode, GripVertical, Eye, EyeOff, ArrowUp, ArrowDown,
+  Barcode, QrCode, GripVertical, Eye, EyeOff, ArrowUp, ArrowDown, Columns,
   Save, Bookmark, Brain, MousePointer2, Move, ShieldCheck, ShieldAlert, Star, FileJson, Database, History as HistoryIcon, Loader2, Minus, Eraser, ScrollText, Touchpad, RotateCcw,
   Wrench, FileSearch, Shield, ArrowRightLeft, Layout, Scissors, Maximize, Minimize, FilePlus, FileMinus, FileCheck, Languages, Share2
 } from 'lucide-react';
@@ -47,7 +47,7 @@ import { Document as PdfDocument, Page as PdfPage, pdfjs } from 'react-pdf';
 import 'react-pdf/dist/Page/AnnotationLayer.css';
 import 'react-pdf/dist/Page/TextLayer.css';
 
-import { StirlingTools } from './components/StirlingTools';
+import { StirlingTools, TOOLS } from './components/StirlingTools';
 import { ToolDialog } from './components/ToolDialog';
 
 // --- Sub-components ---
@@ -121,6 +121,7 @@ const DEFAULT_SETTINGS: AppSettings = {
     barcodesEnabled: true,
     companyDataEnabled: true,
     sensitivity: 0.7,
+    lightMode: false,
   },
   ocrConfig: {
     engine: 'tesseract',
@@ -139,6 +140,9 @@ const DEFAULT_SETTINGS: AppSettings = {
   redactionWordList: [
     'CONFIDENTIAL', 'PROPRIETARY', 'INTERNAL', 'SENSITIVE', 
     'PRIVATE', 'RESTRICTED', 'SECRET', 'CLASSIFIED'
+  ],
+  favorites: [
+    'Merge PDF', 'Split', 'Compress PDF', 'OCR PDF'
   ],
   customTheme: {
     primaryColor: '#000000',
@@ -168,6 +172,7 @@ const DEFAULT_SETTINGS: AppSettings = {
 
 export default function App() {
   const [view, setView] = useState<'home' | 'editor' | 'batch' | 'settings' | 'training' | 'api-hub' | 'stirling-tools' | 'rule-studio' | 'split' | 'merge'>('home');
+  const [selectedStirlingTool, setSelectedStirlingTool] = useState<any>(null);
   const [activeTool, setActiveTool] = useState<any>(null);
   const [files, setFiles] = useState<PDFFile[]>([]);
   const [activeFileId, setActiveFileId] = useState<string | null>(null);
@@ -309,8 +314,8 @@ export default function App() {
             <Layers className="text-white w-5 h-5" />
           </div>
           <div className="flex flex-col">
-            <span className="text-sm font-bold tracking-tight leading-none">Redectio</span>
-            <span className="text-[10px] text-slate-500 font-medium leading-none mt-1">AI-Powered Redaction</span>
+            <span className="text-sm font-bold tracking-tight leading-none">Redaction Studio</span>
+            <span className="text-[10px] text-slate-500 font-medium leading-none mt-1">Free & Open Source PDF Toolkit</span>
           </div>
         </div>
 
@@ -347,6 +352,8 @@ export default function App() {
         <AnimatePresence mode="wait">
           {view === 'home' && (
             <HomeView 
+              settings={settings}
+              setSettings={setSettings}
               onFileSelect={(file) => {
                 const newFile = {
                   id: Math.random().toString(36).substring(7),
@@ -362,10 +369,16 @@ export default function App() {
                 setView('editor');
               }}
               onToolSelect={(toolId) => {
-                if (toolId === 'stirling-tools' || toolId === 'batch' || toolId === 'training' || toolId === 'settings' || toolId === 'api-hub' || toolId === 'rule-studio' || toolId === 'split' || toolId === 'merge') {
+                if (toolId === 'batch' || toolId === 'training' || toolId === 'settings' || toolId === 'api-hub' || toolId === 'rule-studio' || toolId === 'split' || toolId === 'merge') {
                   setView(toolId as any);
                 } else {
-                  setView('stirling-tools');
+                  const tool = TOOLS.find(t => t.name === toolId);
+                  if (tool) {
+                    setSelectedStirlingTool(tool);
+                    setView('stirling-tools');
+                  } else {
+                    setView('stirling-tools');
+                  }
                 }
               }}
             />
@@ -517,7 +530,8 @@ export default function App() {
               className="flex-1 flex"
             >
               <PDFToolboxView 
-                onToolClick={() => {}} 
+                initialTool={selectedStirlingTool}
+                onToolChange={setSelectedStirlingTool}
                 addAlert={addAlert}
               />
             </motion.div>
@@ -638,9 +652,10 @@ function EditorView({ file, settings, setSettings, onBack, setView, addAlert, se
   } | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [isReviewMode, setIsReviewMode] = useState(false);
+  const [isSplitView, setIsSplitView] = useState(false);
   const [hoveredOCR, setHoveredOCR] = useState<OCRResult | null>(null);
   const [auditLogs, setAuditLogs] = useState<{ id: string; action: string; timestamp: Date; details?: string }[]>([]);
-  const [isContinuousScroll, setIsContinuousScroll] = useState(false);
+  const [isContinuousScroll, setIsContinuousScroll] = useState(true);
 
   const handleSave = () => {
     setFiles(prev => prev.map(f => f.id === file.id ? { ...f, redactions } : f));
@@ -786,7 +801,7 @@ function EditorView({ file, settings, setSettings, onBack, setView, addAlert, se
         const imported = JSON.parse(event.target?.result as string);
         if (Array.isArray(imported)) {
           setSettings(prev => {
-            const existingNames = new Set(prev.companyRules.map(r => r.name));
+            const existingNames = new Set((prev.companyRules || []).map(r => r.name));
             const newRules = imported.filter(r => !existingNames.has(r.name));
             if (newRules.length === 0) {
               addAlert('info', 'All templates already exist.');
@@ -794,7 +809,7 @@ function EditorView({ file, settings, setSettings, onBack, setView, addAlert, se
             }
             addAlert('success', `Imported ${newRules.length} new templates successfully.`);
             addAuditLog(`Imported ${newRules.length} templates`);
-            return { ...prev, companyRules: [...prev.companyRules, ...newRules] };
+            return { ...prev, companyRules: [...(prev.companyRules || []), ...newRules] };
           });
         }
       } catch (err) {
@@ -814,7 +829,7 @@ function EditorView({ file, settings, setSettings, onBack, setView, addAlert, se
     const dropX = ((e.clientX - rect.left) / rect.width) * 100;
     const dropY = ((e.clientY - rect.top) / rect.height) * 100;
 
-    const updated = redactions.map(r => {
+    const updated = (redactions || []).map(r => {
       if (r.id === redactionId) {
         return {
           ...r,
@@ -862,9 +877,9 @@ function EditorView({ file, settings, setSettings, onBack, setView, addAlert, se
       const dx = x - activeInteraction.initialMouse.x;
       const dy = y - activeInteraction.initialMouse.y;
 
-      const updated = redactions.map(r => {
+      const updated = (redactions || []).map(r => {
         const isTarget = r.id === activeInteraction.redactionId;
-        const isSelectedPart = redactions.find(red => red.id === activeInteraction.redactionId)?.isSelected && r.isSelected;
+        const isSelectedPart = (redactions || []).find(red => red.id === activeInteraction.redactionId)?.isSelected && r.isSelected;
         
         if (isTarget || isSelectedPart) {
           const initial = activeInteraction.initialRects?.[r.id] || (isTarget ? activeInteraction.initialRect : null);
@@ -917,7 +932,7 @@ function EditorView({ file, settings, setSettings, onBack, setView, addAlert, se
 
     if (isDrawing) {
       if (tool === 'selection' && currentBox) {
-        const updated = redactions.map(r => {
+        const updated = (redactions || []).map(r => {
           if (r.pageIndex === pageNumber - 1) {
             const isInside = 
               r.x >= currentBox.x && 
@@ -1020,9 +1035,9 @@ function EditorView({ file, settings, setSettings, onBack, setView, addAlert, se
       // Identify Company from first page text
       const firstPage = await pdf.getPage(1);
       const textContent = await firstPage.getTextContent();
-      const fullText = textContent.items.map((item: any) => item.str).join(' ');
+      const fullText = (textContent.items || []).map((item: any) => item.str).join(' ');
       
-      const matchedRule = settings.companyRules?.find(r => 
+      const matchedRule = (settings.companyRules || []).find(r => 
         (r.identifiers || []).some(id => fullText.toLowerCase().includes(id.toLowerCase()))
       );
       
@@ -1032,7 +1047,7 @@ function EditorView({ file, settings, setSettings, onBack, setView, addAlert, se
         
         // Apply learned coordinates if they exist
         if (matchedRule.learnedCoordinates && matchedRule.learnedCoordinates.length > 0) {
-          const learnedRedactions: RedactionBox[] = matchedRule.learnedCoordinates.map(coord => ({
+          const learnedRedactions: RedactionBox[] = (matchedRule.learnedCoordinates || []).map(coord => ({
             id: Math.random().toString(36).substring(7),
             pageIndex: coord.pageIndex,
             x: coord.x,
@@ -1255,8 +1270,8 @@ function EditorView({ file, settings, setSettings, onBack, setView, addAlert, se
         try {
           const page = await pdf.getPage(1);
           const textContent = await page.getTextContent();
-          const text = textContent.items.map((item: any) => item.str).join(' ');
-          const matchedRule = detectCompanyFromText(text, settings.companyRules);
+          const text = (textContent.items || []).map((item: any) => item.str).join(' ');
+          const matchedRule = detectCompanyFromText(text, settings.companyRules || []);
           if (matchedRule) {
             setIdentifiedCompany(matchedRule.name);
             addAlert('info', `Detected Company: ${matchedRule.name}. Applying learned patterns...`);
@@ -1463,7 +1478,7 @@ function EditorView({ file, settings, setSettings, onBack, setView, addAlert, se
         if (!ocrData) throw new Error('OCR failed');
         text = ocrData.text || '';
         words = ocrData.words || [];
-        setOcrResults(prev => ({ ...prev, [pageNumber - 1]: ocrData.words.map((w: any) => ({
+        setOcrResults(prev => ({ ...prev, [pageNumber - 1]: (ocrData.words || []).map((w: any) => ({
           text: w.text,
           x: (w.bbox.x0 / canvas.width) * 100,
           y: (w.bbox.y0 / canvas.height) * 100,
@@ -1474,31 +1489,85 @@ function EditorView({ file, settings, setSettings, onBack, setView, addAlert, se
 
       const suggestions: RedactionBox[] = [];
 
-      // 2. Advanced AI Detection
-      const advancedDetections = await detectAdvancedAI(text, settings.aiDefaults, settings.companyProfile);
-      advancedDetections.forEach((det, index) => {
-        const matchedWords = words.filter((w: any) => det.text.toLowerCase().includes(w.text.toLowerCase()));
-        if (matchedWords.length > 0) {
-          const minX = Math.min(...matchedWords.map((w: any) => w.bbox.x0));
-          const minY = Math.min(...matchedWords.map((w: any) => w.bbox.y0));
-          const maxX = Math.max(...matchedWords.map((w: any) => w.bbox.x1));
-          const maxY = Math.max(...matchedWords.map((w: any) => w.bbox.y1));
+      // 2. Call Backend AI Suggestion API (Gemini)
+      try {
+        const response = await fetch('/api/ai/suggest', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            text,
+            context: {
+              pageNumber,
+              companyProfile: settings.companyProfile,
+              aiDefaults: settings.aiDefaults
+            }
+          })
+        });
 
-          suggestions.push({
-            id: `suggest-ai-${Date.now()}-${index}`,
-            pageIndex: pageNumber - 1,
-            x: (minX / canvas.width) * 100,
-            y: (minY / canvas.height) * 100,
-            width: ((maxX - minX) / canvas.width) * 100,
-            height: ((maxY - minY) / canvas.height) * 100,
-            label: det.label,
-            comment: det.reason,
-            type: 'auto',
-            isSelected: false,
-            text: det.text
+        if (response.ok) {
+          const aiData = await response.json();
+          if (aiData.suggestions && Array.isArray(aiData.suggestions)) {
+            aiData.suggestions.forEach((det: any, index: number) => {
+              // Try to find coordinates for the suggested text
+              const matchedWords = words.filter((w: any) => 
+                det.text.toLowerCase().includes(w.text.toLowerCase()) || 
+                w.text.toLowerCase().includes(det.text.toLowerCase())
+              );
+
+              if (matchedWords.length > 0) {
+                const minX = Math.min(...matchedWords.map((w: any) => w.bbox.x0));
+                const minY = Math.min(...matchedWords.map((w: any) => w.bbox.y0));
+                const maxX = Math.max(...matchedWords.map((w: any) => w.bbox.x1));
+                const maxY = Math.max(...matchedWords.map((w: any) => w.bbox.y1));
+
+                suggestions.push({
+                  id: `suggest-ai-${Date.now()}-${index}`,
+                  pageIndex: pageNumber - 1,
+                  x: (minX / canvas.width) * 100,
+                  y: (minY / canvas.height) * 100,
+                  width: ((maxX - minX) / canvas.width) * 100,
+                  height: ((maxY - minY) / canvas.height) * 100,
+                  label: det.label,
+                  comment: det.reason,
+                  confidence: det.confidence,
+                  type: 'auto',
+                  isSelected: false,
+                  text: det.text
+                });
+              }
+            });
+          }
+        } else {
+          console.warn('Backend AI suggestions failed, falling back to local detection');
+          // Fallback to local detection if backend fails
+          const advancedDetections = await detectAdvancedAI(text, settings.aiDefaults, settings.companyProfile);
+          advancedDetections.forEach((det, index) => {
+            const matchedWords = words.filter((w: any) => det.text.toLowerCase().includes(w.text.toLowerCase()));
+            if (matchedWords.length > 0) {
+              const minX = Math.min(...matchedWords.map((w: any) => w.bbox.x0));
+              const minY = Math.min(...matchedWords.map((w: any) => w.bbox.y0));
+              const maxX = Math.max(...matchedWords.map((w: any) => w.bbox.x1));
+              const maxY = Math.max(...matchedWords.map((w: any) => w.bbox.y1));
+
+              suggestions.push({
+                id: `suggest-ai-local-${Date.now()}-${index}`,
+                pageIndex: pageNumber - 1,
+                x: (minX / canvas.width) * 100,
+                y: (minY / canvas.height) * 100,
+                width: ((maxX - minX) / canvas.width) * 100,
+                height: ((maxY - minY) / canvas.height) * 100,
+                label: det.label,
+                comment: det.reason,
+                type: 'auto',
+                isSelected: false,
+                text: det.text
+              });
+            }
           });
         }
-      });
+      } catch (err) {
+        console.error('AI API Error:', err);
+      }
 
       // 3. Apply Custom AI Rules from Settings
       if (settings.companyRules?.length > 0) {
@@ -1525,11 +1594,11 @@ function EditorView({ file, settings, setSettings, onBack, setView, addAlert, se
                   currentPos = wordEnd + 1;
                 }
 
-                if (matchedWords.length > 0) {
-                  const minX = Math.min(...matchedWords.map(w => w.bbox.x0));
-                  const minY = Math.min(...matchedWords.map(w => w.bbox.y0));
-                  const maxX = Math.max(...matchedWords.map(w => w.bbox.x1));
-                  const maxY = Math.max(...matchedWords.map(w => w.bbox.y1));
+                if ((matchedWords || []).length > 0) {
+                  const minX = Math.min(...(matchedWords || []).map(w => w.bbox.x0));
+                  const minY = Math.min(...(matchedWords || []).map(w => w.bbox.y0));
+                  const maxX = Math.max(...(matchedWords || []).map(w => w.bbox.x1));
+                  const maxY = Math.max(...(matchedWords || []).map(w => w.bbox.y1));
 
                   suggestions.push({
                     id: `suggest-rule-${rule.id}-${patIdx}-${Date.now()}`,
@@ -1571,11 +1640,11 @@ function EditorView({ file, settings, setSettings, onBack, setView, addAlert, se
                 currentPos = wordEnd + 1;
               }
 
-              if (matchedWords.length > 0) {
-                const minX = Math.min(...matchedWords.map(w => w.bbox.x0));
-                const minY = Math.min(...matchedWords.map(w => w.bbox.y0));
-                const maxX = Math.max(...matchedWords.map(w => w.bbox.x1));
-                const maxY = Math.max(...matchedWords.map(w => w.bbox.y1));
+              if ((matchedWords || []).length > 0) {
+                const minX = Math.min(...(matchedWords || []).map(w => w.bbox.x0));
+                const minY = Math.min(...(matchedWords || []).map(w => w.bbox.y0));
+                const maxX = Math.max(...(matchedWords || []).map(w => w.bbox.x1));
+                const maxY = Math.max(...(matchedWords || []).map(w => w.bbox.y1));
 
                 suggestions.push({
                   id: `suggest-term-${rule.id}-${termIdx}-${Date.now()}`,
@@ -1750,11 +1819,11 @@ function EditorView({ file, settings, setSettings, onBack, setView, addAlert, se
               
               // Find coordinates for this match (approximate by matching words)
               const matchedWords = words.filter((w: any) => matchedText.includes(w.text));
-              if (matchedWords.length > 0) {
-                const minX = Math.min(...matchedWords.map((w: any) => w.bbox.x0));
-                const minY = Math.min(...matchedWords.map((w: any) => w.bbox.y0));
-                const maxX = Math.max(...matchedWords.map((w: any) => w.bbox.x1));
-                const maxY = Math.max(...matchedWords.map((w: any) => w.bbox.y1));
+              if ((matchedWords || []).length > 0) {
+                const minX = Math.min(...(matchedWords || []).map((w: any) => w.bbox.x0));
+                const minY = Math.min(...(matchedWords || []).map((w: any) => w.bbox.y0));
+                const maxX = Math.max(...(matchedWords || []).map((w: any) => w.bbox.x1));
+                const maxY = Math.max(...(matchedWords || []).map((w: any) => w.bbox.y1));
 
                 newAutoRedactions.push({
                   id: `regex-${Date.now()}-${pIndex}-${matchIndex}`,
@@ -2071,29 +2140,87 @@ function EditorView({ file, settings, setSettings, onBack, setView, addAlert, se
         </aside>
 
         <main className="flex-1 relative flex flex-col overflow-hidden">
-          <PDFViewer
-            fileUrl={file.url}
-            redactions={redactions}
-            onRedactionsChange={(newRedactions) => {
-              setRedactions(newRedactions);
-              addToHistory(newRedactions);
-            }}
-            tool={tool}
-            scale={scale}
-            onScaleChange={setScale}
-            pageNumber={pageNumber}
-            onPageChange={setPageNumber}
-            isReviewMode={isReviewMode}
-            redactionStyle={settings.redactionStyle}
-            aiSuggestions={aiSuggestions}
-            onAcceptSuggestion={handleAcceptSuggestion}
-            onDismissSuggestion={handleDismissSuggestion}
-            onComment={handleComment}
-            isContinuous={isContinuousScroll}
-            onContinuousChange={setIsContinuousScroll}
-            canvasRef={canvasRef}
-            onRenderSuccess={() => setIsPageRendered(true)}
-          />
+          <div className={cn("flex-1 relative flex", isSplitView ? "flex-row" : "flex-col")}>
+            <div className={cn("relative flex flex-col", isSplitView ? "flex-1 border-r border-slate-200 dark:border-slate-800" : "flex-1 h-full")}>
+              {isSplitView && (
+                <div className="absolute top-4 left-4 z-30 bg-white/90 dark:bg-slate-900/90 backdrop-blur-md px-3 py-1.5 rounded-full border border-slate-200 dark:border-slate-800 shadow-sm">
+                  <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">Original View</span>
+                </div>
+              )}
+              <PDFViewer
+                fileUrl={file.url}
+                redactions={[]} // No redactions in original view
+                onRedactionsChange={() => {}}
+                tool="selection"
+                scale={scale}
+                onScaleChange={setScale}
+                pageNumber={pageNumber}
+                onPageChange={setPageNumber}
+                isReviewMode={false}
+                redactionStyle={settings.redactionStyle}
+                aiSuggestions={[]}
+                onAcceptSuggestion={() => {}}
+                onDismissSuggestion={() => {}}
+                onComment={() => {}}
+                isContinuous={isContinuousScroll}
+                onContinuousChange={setIsContinuousScroll}
+                showToolbar={!isSplitView}
+              />
+            </div>
+
+            <div className={cn("relative flex flex-col", isSplitView ? "flex-1" : "hidden")}>
+              {isSplitView && (
+                <div className="absolute top-4 left-4 z-30 bg-blue-600 px-3 py-1.5 rounded-full shadow-lg shadow-blue-500/20">
+                  <span className="text-[10px] font-black uppercase tracking-widest text-white">Redacted Preview</span>
+                </div>
+              )}
+              <PDFViewer
+                fileUrl={file.url}
+                redactions={redactions}
+                onRedactionsChange={setRedactions}
+                tool={tool}
+                scale={scale}
+                onScaleChange={setScale}
+                pageNumber={pageNumber}
+                onPageChange={setPageNumber}
+                isReviewMode={true}
+                redactionStyle={settings.redactionStyle}
+                aiSuggestions={aiSuggestions}
+                onAcceptSuggestion={handleAcceptSuggestion}
+                onDismissSuggestion={handleDismissSuggestion}
+                onComment={handleComment}
+                isContinuous={isContinuousScroll}
+                onContinuousChange={setIsContinuousScroll}
+                showToolbar={false}
+              />
+            </div>
+
+            {!isSplitView && (
+              <PDFViewer
+                fileUrl={file.url}
+                redactions={redactions}
+                onRedactionsChange={(newRedactions) => {
+                  setRedactions(newRedactions);
+                  addToHistory(newRedactions);
+                }}
+                tool={tool}
+                scale={scale}
+                onScaleChange={setScale}
+                pageNumber={pageNumber}
+                onPageChange={setPageNumber}
+                isReviewMode={isReviewMode}
+                redactionStyle={settings.redactionStyle}
+                aiSuggestions={aiSuggestions}
+                onAcceptSuggestion={handleAcceptSuggestion}
+                onDismissSuggestion={handleDismissSuggestion}
+                onComment={handleComment}
+                isContinuous={isContinuousScroll}
+                onContinuousChange={setIsContinuousScroll}
+                canvasRef={canvasRef}
+                onRenderSuccess={() => setIsPageRendered(true)}
+              />
+            )}
+          </div>
 
           {/* Floating Toolbar - Stirling Style (Desktop Only) */}
           {!isMobile && (
@@ -2132,6 +2259,21 @@ function EditorView({ file, settings, setSettings, onBack, setView, addAlert, se
                   icon={ShieldAlert} 
                   label="Page" 
                   shortcut="P"
+                />
+                <div className="w-px h-6 bg-slate-200 dark:bg-slate-800 mx-1" />
+                <ToolbarButton 
+                  active={isSplitView} 
+                  onClick={() => setIsSplitView(!isSplitView)} 
+                  icon={Columns} 
+                  label="Split" 
+                  shortcut="S"
+                />
+                <ToolbarButton 
+                  active={isReviewMode} 
+                  onClick={() => setIsReviewMode(!isReviewMode)} 
+                  icon={Eye} 
+                  label="Review" 
+                  shortcut="R"
                 />
               </div>
               
@@ -2582,7 +2724,7 @@ function EditorView({ file, settings, setSettings, onBack, setView, addAlert, se
                       <div className="h-px flex-1 bg-slate-100 dark:bg-slate-800" />
                     </div>
                     <div className="max-h-60 overflow-y-auto space-y-2 scrollbar-hide">
-                      {ocrResults[pageNumber - 1].map((res, idx) => (
+                      {(ocrResults[pageNumber - 1] || []).map((res, idx) => (
                         <div key={idx} className="p-2 bg-slate-50 dark:bg-slate-800 rounded-lg border border-slate-100 dark:border-slate-700">
                           <p className="text-[10px] text-slate-600 dark:text-slate-400 line-clamp-2 italic">"{res.text}"</p>
                         </div>
@@ -2649,12 +2791,22 @@ function EditorView({ file, settings, setSettings, onBack, setView, addAlert, se
                       </button>
                     </div>
                   ) : (
-                    aiSuggestions.map((s) => (
+                    (aiSuggestions || []).map((s) => (
                       <div key={s.id} className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-100 dark:border-slate-700 group">
                         <div className="flex items-center justify-between mb-2">
                           <div className="flex items-center gap-2">
                             <Sparkles className="w-3 h-3 text-blue-500" />
                             <span className="text-[10px] font-bold truncate max-w-[120px]">{s.label}</span>
+                            {s.confidence && (
+                              <span className={cn(
+                                "text-[8px] px-1.5 py-0.5 rounded-full font-bold",
+                                s.confidence > 0.8 ? "bg-emerald-100 text-emerald-600" : 
+                                s.confidence > 0.5 ? "bg-amber-100 text-amber-600" : 
+                                "bg-red-100 text-red-600"
+                              )}>
+                                {Math.round(s.confidence * 100)}%
+                              </span>
+                            )}
                           </div>
                           <div className="flex items-center gap-1">
                             <button 
@@ -3535,11 +3687,11 @@ function BatchView({ files, setFiles, settings, setSettings, addAlert }: {
           const advancedDetections = await detectAdvancedAI(text, settings.aiDefaults, settings.companyProfile);
           advancedDetections.forEach((det, idx) => {
             const matchedWords = words.filter((w: any) => det.text.toLowerCase().includes(w.text.toLowerCase()));
-            if (matchedWords.length > 0) {
-              const minX = Math.min(...matchedWords.map((w: any) => w.bbox.x0));
-              const minY = Math.min(...matchedWords.map((w: any) => w.bbox.y0));
-              const maxX = Math.max(...matchedWords.map((w: any) => w.bbox.x1));
-              const maxY = Math.max(...matchedWords.map((w: any) => w.bbox.y1));
+            if ((matchedWords || []).length > 0) {
+              const minX = Math.min(...(matchedWords || []).map((w: any) => w.bbox.x0));
+              const minY = Math.min(...(matchedWords || []).map((w: any) => w.bbox.y0));
+              const maxX = Math.max(...(matchedWords || []).map((w: any) => w.bbox.x1));
+              const maxY = Math.max(...(matchedWords || []).map((w: any) => w.bbox.y1));
 
               allRedactions.push({
                 id: `advanced-${Date.now()}-${idx}`,
@@ -3613,8 +3765,8 @@ function BatchView({ files, setFiles, settings, setSettings, addAlert }: {
     setSettings(prev => ({
       ...prev,
       savedBatchRules: editingPresetId 
-        ? prev.savedBatchRules.map(r => r.id === editingPresetId ? newRule : r)
-        : [...prev.savedBatchRules, newRule]
+        ? (prev.savedBatchRules || []).map(r => r.id === editingPresetId ? newRule : r)
+        : [...(prev.savedBatchRules || []), newRule]
     }));
     setRuleName('');
     setEditingPresetId(null);
@@ -4446,7 +4598,7 @@ function SettingsView({ settings, setSettings, onBack, activeFile, setFiles, add
   const toggleToolbarItem = (id: ToolbarToolId) => {
     setSettings(prev => ({
       ...prev,
-      toolbar: prev.toolbar.map(t => t.id === id ? { ...t, visible: !t.visible } : t)
+      toolbar: (prev.toolbar || []).map(t => t.id === id ? { ...t, visible: !t.visible } : t)
     }));
   };
 
@@ -4495,7 +4647,7 @@ function SettingsView({ settings, setSettings, onBack, activeFile, setFiles, add
         if (Array.isArray(words)) {
           setSettings(prev => ({
             ...prev,
-            redactionWordList: Array.from(new Set([...prev.redactionWordList, ...words.map(w => String(w).toUpperCase())]))
+            redactionWordList: Array.from(new Set([...(prev.redactionWordList || []), ...(words || []).map(w => String(w).toUpperCase())]))
           }));
           addAlert('success', `Imported ${words.length} words`);
         }
@@ -4606,6 +4758,22 @@ function SettingsView({ settings, setSettings, onBack, activeFile, setFiles, add
         <CollapsibleSection title="AI Defaults" icon={Zap}>
           <div className="space-y-8 pt-4">
             <div className="bg-neutral-50 dark:bg-neutral-800/50 p-6 rounded-2xl border border-neutral-100 dark:border-neutral-800">
+              <div className="flex items-center justify-between mb-6">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 bg-blue-100 dark:bg-blue-900/30 rounded-xl flex items-center justify-center">
+                    <Sparkles className="w-5 h-5 text-blue-600" />
+                  </div>
+                  <div>
+                    <h4 className="text-sm font-bold">Gemini AI Integration</h4>
+                    <p className="text-[10px] text-neutral-500">Cloud-powered sensitive data detection</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                  <span className="text-[10px] font-bold text-emerald-600 uppercase tracking-widest">Connected</span>
+                </div>
+              </div>
+              
               <div className="flex items-center justify-between mb-4">
                 <div>
                   <label className="block text-sm font-semibold">Detection Sensitivity</label>
@@ -4629,32 +4797,33 @@ function SettingsView({ settings, setSettings, onBack, activeFile, setFiles, add
               />
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              {[
-                { label: 'PII Detection', key: 'piiEnabled', icon: ShieldCheck },
-                { label: 'Barcodes', key: 'barcodesEnabled', icon: Barcode },
-                { label: 'Company Data', key: 'companyDataEnabled', icon: Brain },
-              ].map(item => (
-                <label key={item.key} className={cn(
-                  "flex flex-col items-center justify-center p-6 rounded-2xl cursor-pointer transition-all border-2",
-                  (settings.aiDefaults as any)?.[item.key]
-                    ? "bg-blue-600 text-white border-blue-600 shadow-lg shadow-blue-500/20"
-                    : "bg-neutral-50 dark:bg-neutral-800 border-transparent hover:border-neutral-200 dark:hover:border-neutral-700"
-                )}>
-                  <item.icon className="w-6 h-6 mb-3" />
-                  <span className="text-xs font-semibold text-center">{item.label}</span>
-                  <input 
-                    type="checkbox" 
-                    className="hidden"
-                    checked={(settings.aiDefaults as any)?.[item.key]}
-                    onChange={(e) => setSettings(prev => ({
-                      ...prev,
-                      aiDefaults: { ...prev.aiDefaults, [item.key]: e.target.checked }
-                    }))}
-                  />
-                </label>
-              ))}
-            </div>
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                {[
+                  { label: 'PII Detection', key: 'piiEnabled', icon: ShieldCheck },
+                  { label: 'Barcodes', key: 'barcodesEnabled', icon: Barcode },
+                  { label: 'Company Data', key: 'companyDataEnabled', icon: Brain },
+                  { label: 'Light Mode (Low Spec)', key: 'lightMode', icon: Zap },
+                ].map(item => (
+                  <label key={item.key} className={cn(
+                    "flex flex-col items-center justify-center p-6 rounded-2xl cursor-pointer transition-all border-2",
+                    (settings.aiDefaults as any)?.[item.key]
+                      ? "bg-blue-600 text-white border-blue-600 shadow-lg shadow-blue-500/20"
+                      : "bg-neutral-50 dark:bg-neutral-800 border-transparent hover:border-neutral-200 dark:hover:border-neutral-700"
+                  )}>
+                    <item.icon className="w-6 h-6 mb-3" />
+                    <span className="text-xs font-semibold text-center">{item.label}</span>
+                    <input 
+                      type="checkbox" 
+                      className="hidden"
+                      checked={(settings.aiDefaults as any)?.[item.key]}
+                      onChange={(e) => setSettings(prev => ({
+                        ...prev,
+                        aiDefaults: { ...prev.aiDefaults, [item.key]: e.target.checked }
+                      }))}
+                    />
+                  </label>
+                ))}
+              </div>
           </div>
         </CollapsibleSection>
 
@@ -5052,7 +5221,7 @@ function SettingsView({ settings, setSettings, onBack, activeFile, setFiles, add
               Customize the visibility and order of tools in the editor toolbar.
             </p>
             <div className="space-y-2">
-              {settings.toolbar.map((item, index) => (
+              {(settings.toolbar || []).map((item, index) => (
                 <div key={item.id} className="flex items-center gap-4 bg-neutral-50 dark:bg-neutral-800 p-4 rounded-2xl border border-transparent hover:border-neutral-200 dark:hover:border-neutral-700 transition-all group">
                   <div className="cursor-grab active:cursor-grabbing text-neutral-300 group-hover:text-neutral-500 transition-colors">
                     <GripVertical className="w-4 h-4" />
@@ -5060,7 +5229,7 @@ function SettingsView({ settings, setSettings, onBack, activeFile, setFiles, add
                   <span className="flex-1 text-sm font-bold">{item.label}</span>
                   <button 
                     onClick={() => {
-                      const newToolbar = [...settings.toolbar];
+                      const newToolbar = [...(settings.toolbar || [])];
                       newToolbar[index] = { ...item, visible: !item.visible };
                       setSettings(prev => ({ ...prev, toolbar: newToolbar }));
                     }}
@@ -5306,110 +5475,30 @@ function SettingsView({ settings, setSettings, onBack, activeFile, setFiles, add
           <a href="#" className="text-xs font-bold text-slate-400 hover:text-slate-900 dark:hover:text-white transition-colors uppercase tracking-widest">Privacy Policy</a>
           <a href="#" className="text-xs font-bold text-slate-400 hover:text-slate-900 dark:hover:text-white transition-colors uppercase tracking-widest">Support</a>
         </div>
-        <p className="text-[10px] text-slate-400 font-medium uppercase tracking-[0.2em]">Redactio v2.4.0 • Enterprise Edition</p>
+        <p className="text-[10px] text-slate-400 font-medium uppercase tracking-[0.2em]">Redaction Studio v2.4.0 • Enterprise Edition</p>
       </div>
     </div>
   );
 }
-function PDFToolboxView({ onToolClick, addAlert }: { onToolClick: (tool: any) => void; addAlert: any }) {
-  const [selectedTool, setSelectedTool] = useState<any>(null);
-  const [file, setFile] = useState<File | null>(null);
-  const [fileUrl, setFileUrl] = useState<string | null>(null);
-  const [scale, setScale] = useState(1.0);
-  const [pageNumber, setPageNumber] = useState(1);
+function PDFToolboxView({ 
+  initialTool, 
+  onToolChange, 
+  addAlert 
+}: { 
+  initialTool: any; 
+  onToolChange: (tool: any) => void; 
+  addAlert: any 
+}) {
+  const [selectedTool, setSelectedTool] = useState<any>(initialTool);
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0];
-    if (f) {
-      setFile(f);
-      setFileUrl(URL.createObjectURL(f));
-    }
+  useEffect(() => {
+    setSelectedTool(initialTool);
+  }, [initialTool]);
+
+  const handleToolClick = (tool: any) => {
+    setSelectedTool(tool);
+    onToolChange(tool);
   };
-
-  if (selectedTool) {
-    return (
-      <motion.div 
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        className="flex-1 flex h-full bg-slate-50 dark:bg-slate-950"
-      >
-        {/* Sidebar */}
-        <div className="w-80 border-r border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 flex flex-col p-6 gap-6">
-          <div className="space-y-4">
-            <button 
-              onClick={() => setSelectedTool(null)}
-              className="flex items-center gap-2 text-[10px] font-bold text-slate-400 hover:text-slate-900 dark:hover:text-white transition-colors"
-            >
-              <ChevronLeft className="w-3 h-3" />
-              Back to Toolbox
-            </button>
-            <div className="flex items-center gap-2">
-              <selectedTool.icon className="w-5 h-5 text-blue-600" />
-              <h2 className="text-sm font-bold text-slate-900 dark:text-white">{selectedTool.name}</h2>
-            </div>
-            <p className="text-xs text-slate-500 leading-relaxed">{selectedTool.description}</p>
-          </div>
-
-          <div className="space-y-4">
-            <div className="space-y-1.5">
-              <label className="text-xs font-semibold text-slate-500">Upload Document</label>
-              <label className="flex flex-col items-center justify-center w-full h-32 border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-2xl cursor-pointer hover:border-blue-500 dark:hover:border-blue-400 transition-all bg-slate-50 dark:bg-slate-950/50">
-                <div className="flex flex-col items-center justify-center pt-5 pb-6">
-                  <Upload className="w-6 h-6 mb-2 text-slate-400" />
-                  <p className="text-xs font-medium text-slate-400">Select PDF</p>
-                </div>
-                <input type="file" className="hidden" accept=".pdf" onChange={handleFileUpload} />
-              </label>
-            </div>
-          </div>
-
-          <div className="mt-auto">
-            <button
-              disabled={!file}
-              className="w-full bg-blue-600 text-white p-4 rounded-2xl text-xs font-bold hover:bg-blue-700 disabled:opacity-30 transition-all flex items-center justify-center gap-2 shadow-lg shadow-blue-500/20"
-            >
-              <Zap className="w-4 h-4" />
-              Process with {selectedTool.name}
-            </button>
-          </div>
-        </div>
-
-        {/* Main Panel */}
-        <div className="flex-1 flex flex-col bg-slate-50 dark:bg-slate-950">
-          <div className="h-12 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between px-6 bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm">
-            <div className="flex items-center gap-4">
-              <selectedTool.icon className="w-4 h-4 text-blue-600" />
-              <h1 className="text-xs font-bold text-slate-900 dark:text-white">{selectedTool.name}</h1>
-            </div>
-            <div className="flex items-center gap-2">
-              <button className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors" onClick={() => setScale(s => s + 0.1)}><Plus className="w-4 h-4" /></button>
-              <button className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors" onClick={() => setScale(s => Math.max(0.5, s - 0.1))}><Minus className="w-4 h-4" /></button>
-            </div>
-          </div>
-
-          <div className="flex-1 overflow-auto p-12 flex justify-center">
-            {fileUrl ? (
-              <PDFViewer
-                fileUrl={fileUrl}
-                redactions={[]}
-                onRedactionsChange={() => {}}
-                tool="selection"
-                scale={scale}
-                onScaleChange={setScale}
-                pageNumber={pageNumber}
-                onPageChange={setPageNumber}
-              />
-            ) : (
-              <div className="flex flex-col items-center justify-center opacity-20">
-                <selectedTool.icon className="w-24 h-24 mb-4" />
-                <p className="text-sm font-semibold">Upload a document to use this tool</p>
-              </div>
-            )}
-          </div>
-        </div>
-      </motion.div>
-    );
-  }
 
   return (
     <div className="flex-1 overflow-auto p-12 bg-slate-50 dark:bg-slate-950">
@@ -5418,8 +5507,21 @@ function PDFToolboxView({ onToolClick, addAlert }: { onToolClick: (tool: any) =>
           <h1 className="text-6xl font-bold tracking-tight text-slate-900 dark:text-white">PDF Toolbox</h1>
           <p className="text-lg text-slate-500 font-medium">Advanced document manipulation utilities.</p>
         </div>
-        <StirlingTools onToolClick={(tool) => setSelectedTool(tool)} />
+        <StirlingTools onToolClick={handleToolClick} />
       </div>
+
+      <AnimatePresence>
+        {selectedTool && (
+          <ToolDialog 
+            tool={selectedTool} 
+            onClose={() => {
+              setSelectedTool(null);
+              onToolChange(null);
+            }} 
+            addAlert={addAlert} 
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 }
@@ -5455,9 +5557,9 @@ function RuleStudioView({ settings, setSettings, addAlert }: {
       const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise;
       const page = await pdf.getPage(1);
       const textContent = await page.getTextContent();
-      const text = textContent.items.map((item: any) => (item as any).str).join(' ');
+      const text = (textContent.items || []).map((item: any) => (item as any).str).join(' ');
 
-      const found = detectCompanyFromText(text, settings.companyRules);
+      const found = detectCompanyFromText(text, settings.companyRules || []);
       if (found) {
         setDetectedCompany(found);
         addAlert('success', `Detected company: ${found.name}`);
@@ -5500,8 +5602,8 @@ function RuleStudioView({ settings, setSettings, addAlert }: {
     };
 
     const updatedRules = detectedCompany 
-      ? settings.companyRules.map(r => r.id === detectedCompany.id ? newRule : r)
-      : [...settings.companyRules, newRule];
+      ? (settings.companyRules || []).map(r => r.id === detectedCompany.id ? newRule : r)
+      : [...(settings.companyRules || []), newRule];
 
     setSettings(prev => ({ ...prev, companyRules: updatedRules }));
     addAlert('success', `Rule for ${companyName} saved successfully!`);
@@ -5512,9 +5614,52 @@ function RuleStudioView({ settings, setSettings, addAlert }: {
       {/* Sidebar */}
       <div className="w-80 border-r border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 flex flex-col p-6 gap-6">
         <div className="space-y-4">
-          <div className="flex items-center gap-2 mb-2">
-            <Database className="w-5 h-5 text-blue-600" />
-            <h2 className="text-sm font-bold text-slate-900 dark:text-white">Company Profile</h2>
+          <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center gap-2">
+              <Database className="w-5 h-5 text-blue-600" />
+              <h2 className="text-sm font-bold text-slate-900 dark:text-white">Company Profile</h2>
+            </div>
+            <div className="flex items-center gap-1">
+              <button 
+                onClick={() => {
+                  const blob = new Blob([JSON.stringify(settings.companyRules || [], null, 2)], { type: 'application/json' });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement('a');
+                  a.href = url;
+                  a.download = 'company_rules.json';
+                  a.click();
+                }}
+                className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors"
+                title="Export Rules"
+              >
+                <Download className="w-3.5 h-3.5" />
+              </button>
+              <label className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors cursor-pointer" title="Import Rules">
+                <Upload className="w-3.5 h-3.5" />
+                <input 
+                  type="file" 
+                  className="hidden" 
+                  accept=".json" 
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (!file) return;
+                    const reader = new FileReader();
+                    reader.onload = (event) => {
+                      try {
+                        const imported = JSON.parse(event.target?.result as string);
+                        if (Array.isArray(imported)) {
+                          setSettings(prev => ({ ...prev, companyRules: [...(prev.companyRules || []), ...imported] }));
+                          addAlert('success', `Imported ${imported.length} rules.`);
+                        }
+                      } catch (err) {
+                        addAlert('error', 'Failed to import rules.');
+                      }
+                    };
+                    reader.readAsText(file);
+                  }} 
+                />
+              </label>
+            </div>
           </div>
           
           <div className="space-y-4">
@@ -5539,6 +5684,55 @@ function RuleStudioView({ settings, setSettings, addAlert }: {
               </label>
             </div>
           </div>
+        </div>
+
+        <div className="flex-1 overflow-y-auto space-y-4 pr-2 scrollbar-hide">
+          <div className="flex items-center gap-2 mb-2">
+            <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Existing Rules</h3>
+            <div className="h-px flex-1 bg-slate-100 dark:bg-slate-800" />
+          </div>
+          {(settings.companyRules || []).length === 0 ? (
+            <div className="text-center py-8 opacity-20">
+              <Database className="w-8 h-8 mx-auto mb-2" />
+              <p className="text-[10px] font-medium">No rules defined yet</p>
+            </div>
+          ) : (
+            (settings.companyRules || []).map(rule => (
+              <div 
+                key={rule.id} 
+                className={cn(
+                  "p-3 rounded-xl border transition-all cursor-pointer group",
+                  detectedCompany?.id === rule.id 
+                    ? "bg-blue-50 dark:bg-blue-950/20 border-blue-200 dark:border-blue-800" 
+                    : "bg-white dark:bg-slate-900 border-slate-100 dark:border-slate-800 hover:border-blue-200 dark:hover:border-blue-800"
+                )}
+                onClick={() => setDetectedCompany(rule)}
+              >
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-xs font-bold truncate">{rule.name}</span>
+                  <button 
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setSettings(prev => ({ ...prev, companyRules: (prev.companyRules || []).filter(r => r.id !== rule.id) }));
+                      if (detectedCompany?.id === rule.id) setDetectedCompany(null);
+                      addAlert('info', 'Rule deleted');
+                    }}
+                    className="opacity-0 group-hover:opacity-100 p-1 hover:bg-red-50 dark:hover:bg-red-950/20 text-red-500 rounded transition-all"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                  </button>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-[8px] font-bold px-1.5 py-0.5 bg-slate-100 dark:bg-slate-800 rounded text-slate-500">
+                    {(rule.learnedCoordinates || []).length} COORDS
+                  </span>
+                  <span className="text-[8px] font-bold px-1.5 py-0.5 bg-slate-100 dark:bg-slate-800 rounded text-slate-500 uppercase">
+                    {rule.isActive ? 'Active' : 'Inactive'}
+                  </span>
+                </div>
+              </div>
+            ))
+          )}
         </div>
 
         <div className="mt-auto space-y-4">
@@ -5689,7 +5883,7 @@ function TrainingView({ settings, setSettings, addAlert }: {
           <Brain className="w-10 h-10 text-blue-600" />
           Training Workflow
         </h2>
-        <p className="text-slate-500 font-medium">Teach Redectio your specific redaction patterns by providing examples.</p>
+        <p className="text-slate-500 font-medium">Teach Redaction Studio your specific redaction patterns by providing examples.</p>
       </div>
 
       <div className="grid grid-cols-12 gap-8">
@@ -5802,7 +5996,7 @@ function TrainingView({ settings, setSettings, addAlert }: {
                   <div className="p-6 space-y-6">
                     <h4 className="text-xs font-semibold text-slate-400">Suggested Rules</h4>
                     <div className="space-y-3">
-                      {learnedData.suggestedRules.map(rule => (
+                      {(learnedData.suggestedRules || []).map(rule => (
                         <div key={rule.id} className="p-4 bg-slate-50 dark:bg-slate-950/50 rounded-2xl border border-slate-200 dark:border-slate-800 group hover:border-blue-500 dark:hover:border-blue-400 transition-all">
                           <div className="flex items-center justify-between mb-2">
                             <span className="font-bold text-sm text-slate-900 dark:text-white">{rule.name}</span>
@@ -5822,7 +6016,7 @@ function TrainingView({ settings, setSettings, addAlert }: {
                   <div className="p-6 space-y-6">
                     <h4 className="text-xs font-semibold text-slate-400">Detected Redactions</h4>
                     <div className="space-y-3">
-                      {learnedData.detectedRedactions.map(redaction => (
+                      {(learnedData.detectedRedactions || []).map(redaction => (
                         <div key={redaction.id} className="flex items-center justify-between p-3 bg-white dark:bg-slate-900 rounded-xl border border-slate-100 dark:border-slate-800">
                           <div className="flex items-center gap-3">
                             <div className="w-2 h-2 bg-emerald-500 rounded-full" />
@@ -5866,8 +6060,14 @@ function TrainingView({ settings, setSettings, addAlert }: {
   );
 }
 
-function HomeView({ onFileSelect, onToolSelect }: { onFileSelect: (file: File) => void; onToolSelect: (view: string) => void }) {
+function HomeView({ settings, setSettings, onFileSelect, onToolSelect }: { 
+  settings: AppSettings;
+  setSettings: React.Dispatch<React.SetStateAction<AppSettings>>;
+  onFileSelect: (file: File) => void; 
+  onToolSelect: (view: string) => void 
+}) {
   const [isDragging, setIsDragging] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
 
   const handleDrag = (e: React.DragEvent) => {
     e.preventDefault();
@@ -5885,75 +6085,46 @@ function HomeView({ onFileSelect, onToolSelect }: { onFileSelect: (file: File) =
     }
   };
 
-  const categories = [
-    {
-      title: "Organize PDF",
-      icon: LayoutGrid,
+  const toggleFavorite = (toolName: string) => {
+    setSettings(prev => {
+      const favorites = prev.favorites || [];
+      if (favorites.includes(toolName)) {
+        return { ...prev, favorites: favorites.filter(f => f !== toolName) };
+      }
+      return { ...prev, favorites: [...favorites, toolName] };
+    });
+  };
+
+  const filteredTools = TOOLS.filter(t => 
+    t.name.toLowerCase().includes(searchQuery.toLowerCase()) || 
+    t.description.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    t.category.toLowerCase().includes(searchQuery.toLowerCase())
+  );
+
+  const favoriteTools = TOOLS.filter(t => (settings.favorites || []).includes(t.name));
+
+  const categories = Array.from(new Set(filteredTools.map(t => t.category))).map(catName => {
+    const firstTool = filteredTools.find(t => t.category === catName);
+    return {
+      title: catName as string,
+      icon: firstTool?.icon || LayoutGrid,
       color: "text-blue-500",
       bg: "bg-blue-50 dark:bg-blue-950/20",
-      tools: [
-        { id: 'merge', name: 'Merge PDF', icon: Files, desc: 'Combine multiple PDFs into one' },
-        { id: 'split', name: 'Split PDF', icon: Scissors, desc: 'Extract pages or ranges' },
-        { id: 'organize', name: 'Organize PDF', icon: Layout, desc: 'Sort, add, or delete pages' },
-        { id: 'remove-pages', name: 'Remove Pages', icon: FileMinus, desc: 'Delete specific pages' }
-      ]
-    },
-    {
-      title: "Optimize PDF",
-      icon: Maximize,
-      color: "text-emerald-500",
-      bg: "bg-emerald-50 dark:bg-emerald-950/20",
-      tools: [
-        { id: 'compress', name: 'Compress PDF', icon: Minimize, desc: 'Reduce file size' },
-        { id: 'repair', name: 'Repair PDF', icon: Wrench, desc: 'Fix damaged documents' },
-        { id: 'unlock', name: 'Unlock PDF', icon: Unlock, desc: 'Remove passwords' },
-        { id: 'protect', name: 'Protect PDF', icon: Lock, desc: 'Add password security' }
-      ]
-    },
-    {
-      title: "Convert from PDF",
-      icon: ArrowRightLeft,
-      color: "text-orange-500",
-      bg: "bg-orange-50 dark:bg-orange-950/20",
-      tools: [
-        { id: 'pdf-to-word', name: 'PDF to Word', icon: FileText, desc: 'Convert to editable DOCX' },
-        { id: 'pdf-to-excel', name: 'PDF to Excel', icon: Database, desc: 'Extract tables to XLSX' },
-        { id: 'pdf-to-ppt', name: 'PDF to PowerPoint', icon: Monitor, desc: 'Convert to slides' },
-        { id: 'pdf-to-jpg', name: 'PDF to JPG', icon: Palette, desc: 'Extract images' }
-      ]
-    },
-    {
-      title: "Convert to PDF",
-      icon: FilePlus,
-      color: "text-purple-500",
-      bg: "bg-purple-50 dark:bg-purple-950/20",
-      tools: [
-        { id: 'word-to-pdf', name: 'Word to PDF', icon: FileText, desc: 'Convert DOCX to PDF' },
-        { id: 'jpg-to-pdf', name: 'JPG to PDF', icon: Palette, desc: 'Convert images to PDF' },
-        { id: 'html-to-pdf', name: 'HTML to PDF', icon: Globe, desc: 'Webpage to PDF' },
-        { id: 'ocr', name: 'OCR PDF', icon: FileSearch, desc: 'Make scanned PDFs searchable' }
-      ]
-    },
-    {
-      title: "Edit PDF",
-      icon: Settings2,
-      color: "text-indigo-500",
-      bg: "bg-indigo-50 dark:bg-indigo-950/20",
-      tools: [
-        { id: 'watermark', name: 'Watermark', icon: Shield, desc: 'Add image or text overlay' },
-        { id: 'page-numbers', name: 'Page Numbers', icon: ScrollText, desc: 'Add page numbering' },
-        { id: 'rotate', name: 'Rotate PDF', icon: RefreshCw, desc: 'Rotate pages' },
-        { id: 'edit', name: 'Edit PDF', icon: TypeIcon, desc: 'Add text, images, or shapes' }
-      ]
-    }
-  ];
+      tools: filteredTools.filter(t => t.category === catName).map(t => ({
+        id: t.name as string,
+        name: t.name as string,
+        icon: t.icon,
+        desc: t.description as string
+      }))
+    };
+  });
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex flex-col">
       {/* Hero Section */}
       <div className="relative overflow-hidden pt-20 pb-16 px-6">
         <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[1000px] h-[600px] bg-blue-500/5 blur-[120px] rounded-full -z-10" />
-        <div className="max-w-6xl mx-auto text-center space-y-6">
+        <div className="max-w-6xl mx-auto text-center space-y-8">
           <motion.div 
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
@@ -5968,8 +6139,8 @@ function HomeView({ onFileSelect, onToolSelect }: { onFileSelect: (file: File) =
             transition={{ delay: 0.1 }}
             className="text-5xl md:text-7xl font-black tracking-tighter text-slate-900 dark:text-white leading-[0.9]"
           >
-            EVERY TOOL YOU NEED <br />
-            <span className="text-blue-600">TO WORK WITH PDFS</span>
+            STIRLING-PDF <br />
+            <span className="text-blue-600">FOR THE WEB</span>
           </motion.h1>
           <motion.p 
             initial={{ opacity: 0, y: 20 }}
@@ -5977,19 +6148,45 @@ function HomeView({ onFileSelect, onToolSelect }: { onFileSelect: (file: File) =
             transition={{ delay: 0.2 }}
             className="text-lg text-slate-500 max-w-2xl mx-auto font-medium"
           >
-            100% free, secure, and runs entirely in your browser. No files ever leave your device.
+            A robust, locally hosted, web-based PDF manipulation tool. 100% private and secure.
           </motion.p>
+
+          {/* Search Bar */}
+          <motion.div 
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.25 }}
+            className="max-w-xl mx-auto relative group"
+          >
+            <div className="absolute inset-y-0 left-5 flex items-center pointer-events-none">
+              <Search className="w-5 h-5 text-slate-400 group-focus-within:text-blue-500 transition-colors" />
+            </div>
+            <input 
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search for tools (e.g. merge, split, ocr)..."
+              className="w-full pl-14 pr-6 py-5 bg-white dark:bg-slate-900 border-2 border-slate-200 dark:border-slate-800 rounded-[2rem] text-sm font-bold outline-none focus:border-blue-500 dark:focus:border-blue-500 shadow-xl shadow-slate-200/20 dark:shadow-none transition-all"
+            />
+            {searchQuery && (
+              <button 
+                onClick={() => setSearchQuery('')}
+                className="absolute inset-y-0 right-5 flex items-center text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            )}
+          </motion.div>
         </div>
       </div>
 
       {/* Main Content */}
-      <div className="max-w-6xl mx-auto w-full px-6 pb-24 grid grid-cols-12 gap-8">
+      <div className="max-w-6xl mx-auto w-full px-6 pb-24 space-y-16">
         {/* Upload Card */}
         <motion.div 
           initial={{ opacity: 0, scale: 0.95 }}
           animate={{ opacity: 1, scale: 1 }}
           transition={{ delay: 0.3 }}
-          className="col-span-12 lg:col-span-12"
         >
           <div 
             onDragEnter={handleDrag}
@@ -6041,42 +6238,95 @@ function HomeView({ onFileSelect, onToolSelect }: { onFileSelect: (file: File) =
           </div>
         </motion.div>
 
-        {/* Categories */}
-        {categories.map((category, idx) => (
-          <motion.div 
-            key={category.title}
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.4 + (idx * 0.1) }}
-            className="col-span-12 md:col-span-4 space-y-6"
-          >
-            <div className="flex items-center gap-3 px-2">
-              <div className={cn("p-2 rounded-xl", category.bg)}>
-                <category.icon className={cn("w-5 h-5", category.color)} />
+        {/* Favorites */}
+        {!searchQuery && favoriteTools.length > 0 && (
+          <div className="space-y-8">
+            <div className="flex items-center gap-4">
+              <div className="p-2 bg-amber-50 dark:bg-amber-950/20 rounded-xl">
+                <Star className="w-5 h-5 text-amber-500 fill-amber-500" />
               </div>
-              <h3 className="font-black tracking-tight text-slate-900 dark:text-white uppercase text-sm">{category.title}</h3>
+              <h3 className="font-black tracking-tight text-slate-900 dark:text-white uppercase text-sm">Favorites</h3>
+              <div className="h-px flex-1 bg-slate-100 dark:bg-slate-800" />
             </div>
-            <div className="grid grid-cols-1 gap-3">
-              {category.tools.map(tool => (
-                <motion.button 
-                  whileHover={{ scale: 1.02, x: 5 }}
-                  whileTap={{ scale: 0.98 }}
-                  key={tool.id}
-                  onClick={() => onToolSelect(tool.id)}
-                  className="group p-5 bg-white dark:bg-slate-900 rounded-[2rem] border border-slate-200 dark:border-slate-800 hover:border-blue-500 dark:hover:border-blue-400 hover:shadow-xl hover:shadow-blue-500/5 transition-all text-left flex items-start gap-4"
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {favoriteTools.map(tool => (
+                <motion.div 
+                  key={tool.name}
+                  whileHover={{ scale: 1.02 }}
+                  className="group relative p-6 bg-white dark:bg-slate-900 rounded-[2rem] border border-slate-200 dark:border-slate-800 hover:border-blue-500 dark:hover:border-blue-400 hover:shadow-xl transition-all flex items-start gap-4 cursor-pointer"
+                  onClick={() => onToolSelect(tool.name)}
                 >
                   <div className="p-3 bg-slate-50 dark:bg-slate-800 rounded-2xl group-hover:bg-blue-50 dark:group-hover:bg-blue-950/30 transition-colors">
                     <tool.icon className="w-6 h-6 text-slate-400 group-hover:text-blue-500 transition-colors" />
                   </div>
-                  <div className="space-y-1">
+                  <div className="space-y-1 pr-8">
                     <h4 className="font-bold text-slate-900 dark:text-white group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">{tool.name}</h4>
-                    <p className="text-xs text-slate-500 font-medium leading-relaxed">{tool.desc}</p>
+                    <p className="text-xs text-slate-500 font-medium leading-relaxed line-clamp-2">{tool.description}</p>
                   </div>
-                </motion.button>
+                  <button 
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      toggleFavorite(tool.name);
+                    }}
+                    className="absolute top-6 right-6 p-2 text-amber-500 hover:scale-110 transition-transform"
+                  >
+                    <Star className="w-4 h-4 fill-amber-500" />
+                  </button>
+                </motion.div>
               ))}
             </div>
-          </motion.div>
-        ))}
+          </div>
+        )}
+
+        {/* Categories */}
+        <div className="grid grid-cols-12 gap-8">
+          {categories.map((category, idx) => (
+            <motion.div 
+              key={category.title}
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.4 + (idx * 0.1) }}
+              className="col-span-12 md:col-span-6 lg:col-span-4 space-y-6"
+            >
+              <div className="flex items-center gap-3 px-2">
+                <div className={cn("p-2 rounded-xl", category.bg)}>
+                  <category.icon className={cn("w-5 h-5", category.color)} />
+                </div>
+                <h3 className="font-black tracking-tight text-slate-900 dark:text-white uppercase text-sm">{category.title}</h3>
+              </div>
+              <div className="grid grid-cols-1 gap-3">
+                {category.tools.map(tool => (
+                  <motion.div 
+                    whileHover={{ scale: 1.02, x: 5 }}
+                    key={tool.id}
+                    className="group relative p-5 bg-white dark:bg-slate-900 rounded-[2rem] border border-slate-200 dark:border-slate-800 hover:border-blue-500 dark:hover:border-blue-400 hover:shadow-xl transition-all text-left flex items-start gap-4 cursor-pointer"
+                    onClick={() => onToolSelect(tool.id)}
+                  >
+                    <div className="p-3 bg-slate-50 dark:bg-slate-800 rounded-2xl group-hover:bg-blue-50 dark:group-hover:bg-blue-950/30 transition-colors">
+                      <tool.icon className="w-6 h-6 text-slate-400 group-hover:text-blue-500 transition-colors" />
+                    </div>
+                    <div className="space-y-1 pr-8">
+                      <h4 className="font-bold text-slate-900 dark:text-white group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">{tool.name}</h4>
+                      <p className="text-xs text-slate-500 font-medium leading-relaxed">{tool.desc}</p>
+                    </div>
+                    <button 
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        toggleFavorite(tool.name);
+                      }}
+                      className={cn(
+                        "absolute top-5 right-5 p-2 transition-all hover:scale-110",
+                        (settings.favorites || []).includes(tool.name) ? "text-amber-500" : "text-slate-200 dark:text-slate-800 hover:text-amber-500"
+                      )}
+                    >
+                      <Star className={cn("w-4 h-4", (settings.favorites || []).includes(tool.name) && "fill-amber-500")} />
+                    </button>
+                  </motion.div>
+                ))}
+              </div>
+            </motion.div>
+          ))}
+        </div>
       </div>
 
       {/* Footer */}
@@ -6084,9 +6334,9 @@ function HomeView({ onFileSelect, onToolSelect }: { onFileSelect: (file: File) =
         <div className="max-w-6xl mx-auto flex flex-col md:flex-row items-center justify-between gap-8">
           <div className="flex items-center gap-2">
             <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center">
-              <ShieldCheck className="w-6 h-6 text-white" />
+              <Layers className="w-6 h-6 text-white" />
             </div>
-            <span className="font-black tracking-tighter text-xl">PDF<span className="text-blue-600">GUARD</span></span>
+            <span className="font-black tracking-tighter text-xl">STIRLING<span className="text-blue-600">-PDF</span></span>
           </div>
           <div className="flex flex-wrap justify-center gap-8 text-xs font-bold uppercase tracking-widest text-slate-400">
             <a href="#" className="hover:text-blue-600 transition-colors">Privacy Policy</a>
